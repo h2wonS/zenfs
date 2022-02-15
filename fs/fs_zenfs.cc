@@ -15,9 +15,12 @@
 #include <string.h>
 #include <unistd.h>
 
+
 #include <sstream>
 #include <utility>
 #include <vector>
+#include <iostream>
+#include <string>
 
 #include "metrics_sample.h"
 #include "rocksdb/utilities/object_registry.h"
@@ -128,6 +131,7 @@ IOStatus ZenMetaLog::AddRecord(const Slice& slice) {
   uint32_t crc = 0;
   char* buffer;
   int ret;
+
   IOStatus s;
 
   phys_sz = record_sz + zMetaHeaderSize;
@@ -150,24 +154,42 @@ IOStatus ZenMetaLog::AddRecord(const Slice& slice) {
   EncodeFixed32(buffer + sizeof(uint32_t), record_sz);
   memcpy(buffer + sizeof(uint32_t) * 2, data, record_sz);
 
-  s = zone_->Append(buffer, phys_sz);
+//  s = zone_->Append(buffer, phys_sz);
+
+//ijsilver
+//write to cns
+  int cns_ret;
+
+  cns_ret = pwrite(zone_->cns_fd, buffer, phys_sz, zone_->cns_wp_);
+  zone_->cns_wp_ += cns_ret;
 
   free(buffer);
   return s;
 }
 
 IOStatus ZenMetaLog::Read(Slice* slice) {
-  int f = zbd_->GetReadFD();
+
+  char tmp_buf[10];
+  char input_path[15] = "/tmp/Zone";
+
+  sprintf(tmp_buf, "%u", zone_->GetZoneNr());
+  strcat(input_path, tmp_buf);
+  int f = open(input_path, O_RDWR);
+
+  
+//  int f = zbd_->GetReadFD();
   const char* data = slice->data();
   size_t read = 0;
   size_t to_read = slice->size();
   int ret;
 
-  if (read_pos_ >= zone_->wp_) {
-    // EOF
+
+  // if file size is bigger than read_pos_ or making file wp
+  if(read_pos_ >= zone_->cns_wp_){
     slice->clear();
     return IOStatus::OK();
   }
+
 
   if ((read_pos_ + to_read) > (zone_->start_ + zone_->max_capacity_)) {
     return IOStatus::IOError("Read across zone");
@@ -175,8 +197,15 @@ IOStatus ZenMetaLog::Read(Slice* slice) {
 
   while (read < to_read) {
     ret = pread(f, (void*)(data + read), to_read - read, read_pos_);
-
-    if (ret == -1 && errno == EINTR) continue;
+    
+    if (ret == 0) {
+      slice->size_ = 0;
+      return IOStatus::OK();
+    }
+    if (ret == -1 && errno == EINTR){
+      printf("error occured!! in cns read\n\n");
+      continue;
+    }
     if (ret < 0) return IOStatus::IOError("Read failed");
 
     read += ret;
@@ -187,6 +216,8 @@ IOStatus ZenMetaLog::Read(Slice* slice) {
 }
 
 IOStatus ZenMetaLog::ReadRecord(Slice* record, std::string* scratch) {
+  
+  
   Slice header;
   uint32_t record_sz = 0;
   uint32_t record_crc = 0;
@@ -200,7 +231,9 @@ IOStatus ZenMetaLog::ReadRecord(Slice* record, std::string* scratch) {
   header = Slice(scratch->c_str(), zMetaHeaderSize);
 
   s = Read(&header);
-  if (!s.ok()) return s;
+  if (!s.ok()){
+    return s;
+  }
 
   // EOF?
   if (header.size() == 0) {
@@ -211,12 +244,16 @@ IOStatus ZenMetaLog::ReadRecord(Slice* record, std::string* scratch) {
   GetFixed32(&header, &record_crc);
   GetFixed32(&header, &record_sz);
 
+
   scratch->clear();
   scratch->append(record_sz, 0);
 
+  
   *record = Slice(scratch->c_str(), record_sz);
   s = Read(record);
-  if (!s.ok()) return s;
+  if (!s.ok()) {
+    return s;
+  }
 
   actual_crc = crc32c::Value((const char*)&record_sz, sizeof(uint32_t));
   actual_crc = crc32c::Extend(actual_crc, record->data(), record->size());
@@ -933,7 +970,7 @@ Status ZenFS::Mount(bool readonly) {
     s = super_block->DecodeFrom(&super_record);
     if (s.ok()) s = super_block->CompatibleWith(zbd_);
     if (!s.ok()) return s;
-
+    
     Info(logger_, "Found OK superblock in zone %lu seq: %u\n", z->GetZoneNr(),
          super_block->GetSeq());
 
@@ -943,7 +980,9 @@ Status ZenFS::Mount(bool readonly) {
     valid_zones.push_back(z);
   }
 
-  if (!seq_map.size()) return Status::NotFound("No valid superblock found");
+  if (!seq_map.size()){
+     return Status::NotFound("No valid superblock found");
+  }
 
   /* Sort superblocks by descending sequence number */
   std::sort(seq_map.begin(), seq_map.end(),
@@ -1064,14 +1103,14 @@ Status ZenFS::MkFS(std::string aux_fs_path, uint32_t finish_threshold) {
 
     if (meta_zone != mz) {
       // for meta_zone == mz the ownership of mz's busy flag is passed to log.
-      if (!mz->Release()) {
+      if (!mz->Release()){ 
         assert(false);
         return Status::Aborted("Could not unset busy flag of zone " +
                                std::to_string(mz->GetZoneNr()));
       }
     }
   }
-
+  
   if (!meta_zone) {
     return Status::IOError("Not available meta zones\n");
   }
@@ -1081,7 +1120,7 @@ Status ZenFS::MkFS(std::string aux_fs_path, uint32_t finish_threshold) {
   Superblock super(zbd_, aux_fs_path, finish_threshold);
   std::string super_string;
   super.EncodeTo(&super_string);
-
+  
   s = log->AddRecord(super_string);
   if (!s.ok()) return std::move(s);
 
@@ -1108,7 +1147,7 @@ std::map<std::string, Env::WriteLifeTimeHint> ZenFS::GetWriteLifeTimeHints() {
   return hint_map;
 }
 
-#ifndef NDEBUG
+//#ifndef NDEBUG
 static std::string GetLogFilename(std::string bdev) {
   std::ostringstream ss;
   time_t t = time(0);
@@ -1120,21 +1159,21 @@ static std::string GetLogFilename(std::string bdev) {
 
   return ss.str();
 }
-#endif
+//#endif
 
 Status NewZenFS(FileSystem** fs, const std::string& bdevname,
                 std::shared_ptr<ZenFSMetrics> metrics) {
   std::shared_ptr<Logger> logger;
   Status s;
 
-#ifndef NDEBUG
+//#ifndef NDEBUG
   s = Env::Default()->NewLogger(GetLogFilename(bdevname), &logger);
   if (!s.ok()) {
     fprintf(stderr, "ZenFS: Could not create logger");
   } else {
     logger->SetInfoLogLevel(DEBUG_LEVEL);
   }
-#endif
+//#endif
 
   ZonedBlockDevice* zbd = new ZonedBlockDevice(bdevname, logger, metrics);
   IOStatus zbd_status = zbd->Open(false, true);

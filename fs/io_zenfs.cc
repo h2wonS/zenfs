@@ -314,8 +314,10 @@ IOStatus ZoneFile::PositionedRead(uint64_t offset, size_t n, Slice* result,
     bool aligned = (pread_sz % zbd_->GetBlockSize() == 0);
     if (direct && aligned) {
       r = pread(f_direct, ptr, pread_sz, r_off);
+      if(r == -1) printf("direct read error in io_zenfs.cc\n");
     } else {
       r = pread(f, ptr, pread_sz, r_off);
+      if(r == -1) printf("read error in io_zenfs.cc\n");
     }
 
     if (r <= 0) {
@@ -374,6 +376,7 @@ void ZoneFile::PushExtent() {
 IOStatus ZoneFile::Append(void* data, int data_size, int valid_size) {
   uint32_t left = data_size;
   uint32_t wr_size, offset = 0;
+  uint32_t tmp_cap;
   IOStatus s = IOStatus::OK();
 
   if (!active_zone_) {
@@ -417,8 +420,9 @@ IOStatus ZoneFile::Append(void* data, int data_size, int valid_size) {
     }
 
     wr_size = left;
-    if (wr_size > active_zone_->capacity_) wr_size = active_zone_->capacity_;
-
+    if (wr_size > active_zone_->capacity_-active_zone_->zone_buffer.CurrentSize()){ 
+      wr_size = active_zone_->capacity_-active_zone_->zone_buffer.CurrentSize();
+    }
     s = active_zone_->Append((char*)data + offset, wr_size);
     if (!s.ok()) return s;
 
@@ -497,6 +501,8 @@ IOStatus ZonedWritableFile::Fsync(const IOOptions& /*options*/,
                                   IODebugContext* /*dbg*/) {
   IOStatus s;
 
+//  active_zone_->PFlush();
+  
   buffer_mtx_.lock();
   s = FlushBuffer();
   buffer_mtx_.unlock();
@@ -504,7 +510,6 @@ IOStatus ZonedWritableFile::Fsync(const IOOptions& /*options*/,
     return s;
   }
   zoneFile_->PushExtent();
-
   return metadata_writer_->Persist(zoneFile_);
 }
 

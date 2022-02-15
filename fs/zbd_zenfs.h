@@ -26,6 +26,8 @@
 #include "metrics.h"
 #include "rocksdb/env.h"
 #include "rocksdb/io_status.h"
+#include "/home/jelee/rocksdb/util/aligned_buffer.h"
+
 
 namespace ROCKSDB_NAMESPACE {
 
@@ -39,16 +41,22 @@ class Zone {
  public:
   explicit Zone(ZonedBlockDevice *zbd, struct zbd_zone *z);
 
+  AlignedBuffer zone_buffer;
+  uint32_t zone_buffer_size;
   uint64_t start_;
   uint64_t capacity_; /* remaining capacity */
   uint64_t max_capacity_;
   uint64_t wp_;
+  uint64_t cns_wp_;
+  int cns_fd;
   Env::WriteLifeTimeHint lifetime_;
   std::atomic<long> used_capacity_;
 
   IOStatus Reset();
   IOStatus Finish();
   IOStatus Close();
+  
+  IOStatus PFlush();
 
   IOStatus Append(char *data, uint32_t size);
   bool IsUsed();

@@ -57,6 +57,9 @@ Zone::Zone(ZonedBlockDevice *zbd, struct zbd_zone *z)
   capacity_ = 0;
   if (!(zbd_zone_full(z) || zbd_zone_offline(z) || zbd_zone_rdonly(z)))
     capacity_ = zbd_zone_capacity(z) - (zbd_zone_wp(z) - zbd_zone_start(z));
+  
+  zone_buffer.Alignment(4096);
+  zone_buffer.AllocateNewBuffer(192*1024);
 }
 
 bool Zone::IsUsed() { return (used_capacity_ > 0); }
@@ -91,12 +94,11 @@ IOStatus Zone::Reset() {
   unsigned int report = 1;
   struct zbd_zone z;
   int ret;
-
-  assert(!IsUsed());
-  assert(IsBusy());
-
+  
   ret = zbd_reset_zones(zbd_->GetWriteFD(), start_, zone_sz);
-  if (ret) return IOStatus::IOError("Zone reset failed\n");
+  if (ret){
+    return IOStatus::IOError("Zone reset failed\n");
+  }
 
   ret = zbd_report_zones(zbd_->GetReadFD(), start_, zone_sz, ZBD_RO_ALL, &z,
                          &report);
@@ -121,6 +123,10 @@ IOStatus Zone::Finish() {
 
   assert(IsBusy());
 
+//ijsilver
+  //add PFlush later work!
+  PFlush();
+
   ret = zbd_finish_zones(fd, start_, zone_sz);
   if (ret) return IOStatus::IOError("Zone finish failed\n");
 
@@ -134,37 +140,74 @@ IOStatus Zone::Close() {
   size_t zone_sz = zbd_->GetZoneSize();
   int fd = zbd_->GetWriteFD();
   int ret;
-
   assert(IsBusy());
 
+//ijsilver
+  //flush
+  PFlush();
+
   if (!(IsEmpty() || IsFull())) {
-    ret = zbd_close_zones(fd, start_, zone_sz);
-    if (ret) return IOStatus::IOError("Zone close failed\n");
+   ret = zbd_close_zones(fd, start_, zone_sz);
+
+    if (ret){
+       return IOStatus::IOError("Zone close failed\n");
+    }
   }
 
   return IOStatus::OK();
 }
 
-IOStatus Zone::Append(char *data, uint32_t size) {
-  char *ptr = data;
-  uint32_t left = size;
-  int fd = zbd_->GetWriteFD();
-  int ret;
 
-  if (capacity_ < size)
-    return IOStatus::NoSpace("Not enough capacity for append");
-
-  assert((size % zbd_->GetBlockSize()) == 0);
-
-  while (left) {
-    ret = pwrite(fd, ptr, size, wp_);
+//ijsilver
+IOStatus Zone::PFlush(){
+  //padding and flush
+  if(zone_buffer.CurrentSize()){ 
+    size_t pad_size = zone_buffer.Capacity() - zone_buffer.CurrentSize();
+    
+    zone_buffer.PadWith(pad_size, 3);
+   
+    int ret;
+    int fd = zbd_->GetWriteFD();                                                                                                        
+    uint32_t left = zone_buffer.CurrentSize();                            
+   
+    ret = pwrite(fd, zone_buffer.BufferStart(), zone_buffer.CurrentSize(),wp_);
     if (ret < 0) return IOStatus::IOError("Write failed");
-
-    ptr += ret;
     wp_ += ret;
     capacity_ -= ret;
     left -= ret;
+
+    zone_buffer.AllocateNewBuffer(192*1024); 
+    return IOStatus::OK();
   }
+  return IOStatus::OK();
+}
+
+IOStatus Zone::Append(char *data, uint32_t size) {
+
+  uint32_t pad_size = size % (192*1024);
+  
+  if(capacity_ < zone_buffer.CurrentSize()+size){
+//    printf("CurrentSize = %u, size = %u, pad_size_ = %u, capacity_ = %u\n", zone_buffer.CurrentSize(), size, pad_size, capacity_);
+    return IOStatus::NoSpace("Not enough capacity for append");
+  }
+  size_t buf_ret = zone_buffer.Append(data, size);
+  
+  if(buf_ret < size){
+    PFlush();
+    size_t tmp_left = size - buf_ret;
+    size_t buf_ptr = buf_ret;
+    while(tmp_left){
+      buf_ret = zone_buffer.Append(data+buf_ptr, tmp_left);
+      if(zone_buffer.CurrentSize() == zone_buffer.Capacity()){
+        PFlush();
+      }
+      buf_ptr += buf_ret;
+      tmp_left -= buf_ret;
+    }
+  }
+  if(zone_buffer.CurrentSize() == zone_buffer.Capacity()){
+    PFlush();
+  }  
 
   return IOStatus::OK();
 }
@@ -311,7 +354,22 @@ IOStatus ZonedBlockDevice::Open(bool readonly, bool exclusive) {
     /* Only use sequential write required zones */
     if (zbd_zone_type(z) == ZBD_ZONE_TYPE_SWR) {
       if (!zbd_zone_offline(z)) {
-        meta_zones.push_back(new Zone(this, z));
+
+//ij_silver
+#if 1
+        Zone *tmp_zone = new Zone(this, z);
+        char tmp_buf[10];
+        char input_path[15] = "/tmp/Zone";
+        sprintf(tmp_buf, "%u", tmp_zone->GetZoneNr());
+        strcat(input_path, tmp_buf);
+        
+        if((tmp_zone->cns_fd = open(input_path, O_RDWR | O_CREAT | O_SYNC, 755)) == -1){
+          printf("error input path = %s\n", input_path);
+        }
+
+        meta_zones.push_back(tmp_zone);
+#endif
+//        meta_zones.push_back(new Zone(this, z));
       }
       m++;
     }
