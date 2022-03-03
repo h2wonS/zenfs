@@ -363,7 +363,6 @@ void ZoneFile::PushExtent() {
 
   length = fileSize - extent_filepos_;
   if (length == 0) return;
-
   assert(length <= (active_zone_->wp_ - extent_start_));
   extents_.push_back(new ZoneExtent(extent_start_, length, active_zone_));
 
@@ -420,9 +419,8 @@ IOStatus ZoneFile::Append(void* data, int data_size, int valid_size) {
     }
 
     wr_size = left;
-    if (wr_size > active_zone_->capacity_-active_zone_->zone_buffer.CurrentSize()){ 
-      wr_size = active_zone_->capacity_-active_zone_->zone_buffer.CurrentSize();
-    }
+    if (wr_size > active_zone_->capacity_) wr_size = active_zone_->capacity_;
+
     s = active_zone_->Append((char*)data + offset, wr_size);
     if (!s.ok()) return s;
 
@@ -501,8 +499,9 @@ IOStatus ZonedWritableFile::Fsync(const IOOptions& /*options*/,
                                   IODebugContext* /*dbg*/) {
   IOStatus s;
 
-//  active_zone_->PFlush();
-  
+  // Finish (actual write to zones) zone group
+  // We need to keep going for the last footer metdata blocks.
+
   buffer_mtx_.lock();
   s = FlushBuffer();
   buffer_mtx_.unlock();

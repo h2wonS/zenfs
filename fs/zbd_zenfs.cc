@@ -51,15 +51,29 @@ Zone::Zone(ZonedBlockDevice *zbd, struct zbd_zone *z)
       busy_(false),
       start_(zbd_zone_start(z)),
       max_capacity_(zbd_zone_capacity(z)),
-      wp_(zbd_zone_wp(z)) {
+      wp_(zbd_zone_wp(z)),
+      before_padding_wp_(0) {
   lifetime_ = Env::WLTH_NOT_SET;
   used_capacity_ = 0;
   capacity_ = 0;
+
+  char tmp_buf[10];
+  char input_path[15] = "/tmp/Zone";
+
+  sprintf(tmp_buf,"%u", GetZoneNr());
+  FILE* fp = fopen(input_path, "r");
+  if(fp !=NULL){
+    fseek(fp, 0, SEEK_END);
+    cns_wp_ = ftell(fp);
+//    printf("zone constructor cns_wp_ = %u\n", cns_wp_);
+  }
+  else{
+    cns_wp_ = 0;
+  }
+
   if (!(zbd_zone_full(z) || zbd_zone_offline(z) || zbd_zone_rdonly(z)))
     capacity_ = zbd_zone_capacity(z) - (zbd_zone_wp(z) - zbd_zone_start(z));
-  
-  zone_buffer.Alignment(4096);
-  zone_buffer.AllocateNewBuffer(192*1024);
+
 }
 
 bool Zone::IsUsed() { return (used_capacity_ > 0); }
@@ -121,17 +135,12 @@ IOStatus Zone::Finish() {
   int fd = zbd_->GetWriteFD();
   int ret;
 
-  assert(IsBusy());
-
-//ijsilver
-  //add PFlush later work!
-  PFlush();
-
   ret = zbd_finish_zones(fd, start_, zone_sz);
   if (ret) return IOStatus::IOError("Zone finish failed\n");
 
   capacity_ = 0;
   wp_ = start_ + zone_sz;
+  cns_wp_ = zone_sz;
 
   return IOStatus::OK();
 }
@@ -141,10 +150,6 @@ IOStatus Zone::Close() {
   int fd = zbd_->GetWriteFD();
   int ret;
   assert(IsBusy());
-
-//ijsilver
-  //flush
-  PFlush();
 
   if (!(IsEmpty() || IsFull())) {
    ret = zbd_close_zones(fd, start_, zone_sz);
@@ -157,57 +162,42 @@ IOStatus Zone::Close() {
   return IOStatus::OK();
 }
 
-
-//ijsilver
-IOStatus Zone::PFlush(){
-  //padding and flush
-  if(zone_buffer.CurrentSize()){ 
-    size_t pad_size = zone_buffer.Capacity() - zone_buffer.CurrentSize();
-    
-    zone_buffer.PadWith(pad_size, 3);
-   
-    int ret;
-    int fd = zbd_->GetWriteFD();                                                                                                        
-    uint32_t left = zone_buffer.CurrentSize();                            
-   
-    ret = pwrite(fd, zone_buffer.BufferStart(), zone_buffer.CurrentSize(),wp_);
-    if (ret < 0) return IOStatus::IOError("Write failed");
-    wp_ += ret;
-    capacity_ -= ret;
-    left -= ret;
-
-    zone_buffer.AllocateNewBuffer(192*1024); 
-    return IOStatus::OK();
-  }
-  return IOStatus::OK();
-}
-
 IOStatus Zone::Append(char *data, uint32_t size) {
+  char *ptr = data;
+  uint32_t left = size;
+  int fd = zbd_->GetWriteFD();
+  int ret;
+  // NOWS: Namespace Optimal Write Size
+  uint32_t unit = 192 * KB;
 
-  uint32_t pad_size = size % (192*1024);
-  
-  if(capacity_ < zone_buffer.CurrentSize()+size){
-//    printf("CurrentSize = %u, size = %u, pad_size_ = %u, capacity_ = %u\n", zone_buffer.CurrentSize(), size, pad_size, capacity_);
+  if (capacity_ < size) {
+    printf("zone %ld capacity full\n", GetZoneNr());
     return IOStatus::NoSpace("Not enough capacity for append");
   }
-  size_t buf_ret = zone_buffer.Append(data, size);
-  
-  if(buf_ret < size){
-    PFlush();
-    size_t tmp_left = size - buf_ret;
-    size_t buf_ptr = buf_ret;
-    while(tmp_left){
-      buf_ret = zone_buffer.Append(data+buf_ptr, tmp_left);
-      if(zone_buffer.CurrentSize() == zone_buffer.Capacity()){
-        PFlush();
-      }
-      buf_ptr += buf_ret;
-      tmp_left -= buf_ret;
+
+  assert((size % zbd_->GetBlockSize()) == 0);
+
+  while (left) {
+    if(left<unit){
+      void *pad;
+
+      posix_memalign(&pad, sysconf(_SC_PAGESIZE), 192*1024);
+      memcpy(pad, ptr, left);
+      ret = pwrite(fd, pad, unit, wp_);
+      free(pad);
     }
+    else{
+      ret = pwrite(fd, ptr, unit, wp_);
+    }
+    if (ret < 0) return IOStatus::IOError("Write failed");
+    assert(ret == (int) unit);
+    ptr += ret;
+    wp_ += ret;
+    capacity_ -= ret;
+
+    if(left<ret) left=0;
+    else left -= ret;
   }
-  if(zone_buffer.CurrentSize() == zone_buffer.Capacity()){
-    PFlush();
-  }  
 
   return IOStatus::OK();
 }

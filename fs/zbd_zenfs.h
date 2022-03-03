@@ -41,13 +41,12 @@ class Zone {
  public:
   explicit Zone(ZonedBlockDevice *zbd, struct zbd_zone *z);
 
-  AlignedBuffer zone_buffer;
-  uint32_t zone_buffer_size;
   uint64_t start_;
   uint64_t capacity_; /* remaining capacity */
   uint64_t max_capacity_;
   uint64_t wp_;
   uint64_t cns_wp_;
+  uint64_t before_padding_wp_;
   int cns_fd;
   Env::WriteLifeTimeHint lifetime_;
   std::atomic<long> used_capacity_;
@@ -169,5 +168,3 @@ class ZonedBlockDevice {
 };
 
 }  // namespace ROCKSDB_NAMESPACE
-
-#endif  // !defined(ROCKSDB_LITE) && defined(OS_LINUX)

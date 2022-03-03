@@ -162,7 +162,9 @@ IOStatus ZenMetaLog::AddRecord(const Slice& slice) {
 
   cns_ret = pwrite(zone_->cns_fd, buffer, phys_sz, zone_->cns_wp_);
   zone_->cns_wp_ += cns_ret;
-
+  zone_->wp_ += cns_ret;
+//  printf("Zone %u \n", zone_->GetZoneNr());
+//  printf("cns_ret = %u  phys_sz = %u  cns_wp_ = %u\n\n", cns_ret, phys_sz, zone_->cns_wp_);
   free(buffer);
   return s;
 }
@@ -175,14 +177,14 @@ IOStatus ZenMetaLog::Read(Slice* slice) {
   sprintf(tmp_buf, "%u", zone_->GetZoneNr());
   strcat(input_path, tmp_buf);
   int f = open(input_path, O_RDWR);
-
-  
+  FILE* fp = fopen(input_path, "r");
+  fseek(fp, 0, SEEK_END);
+  zone_->cns_wp_ = ftell(fp);
 //  int f = zbd_->GetReadFD();
   const char* data = slice->data();
   size_t read = 0;
   size_t to_read = slice->size();
   int ret;
-
 
   // if file size is bigger than read_pos_ or making file wp
   if(read_pos_ >= zone_->cns_wp_){
