@@ -6,8 +6,6 @@
 
 #pragma once
 
-#if !defined(ROCKSDB_LITE) && defined(OS_LINUX)
-
 #include <errno.h>
 #include <libzbd/zbd.h>
 #include <stdlib.h>
