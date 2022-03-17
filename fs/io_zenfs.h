@@ -20,6 +20,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <thread>
 
 #include "rocksdb/file_system.h"
 #include "rocksdb/io_status.h"
@@ -40,6 +41,10 @@ class ZoneExtent {
 };
 
 class ZoneFile {
+ public:
+  // write (arith), read if ( 3 < nr_threads.load())
+  std::atomic<int> nr_threads;
+ 
  protected:
   ZonedBlockDevice* zbd_;
   std::vector<ZoneExtent*> extents_;
@@ -69,7 +74,7 @@ class ZoneFile {
   void OpenWR();
   IOStatus CloseWR();
   bool IsOpenForWR();
-
+  IOStatus Append(void* data, int data_size, int valid_size, IODebugContext* dbg);
   IOStatus Append(void* data, int data_size, int valid_size);
   IOStatus SetWriteLifeTimeHint(Env::WriteLifeTimeHint lifetime);
   std::string GetFilename();
@@ -87,6 +92,7 @@ class ZoneFile {
   IOStatus PositionedRead(uint64_t offset, size_t n, Slice* result,
                           char* scratch, bool direct);
   ZoneExtent* GetExtent(uint64_t file_offset, uint64_t* dev_offset);
+  void PushExtent2(size_t wr_size);
   void PushExtent();
 
   void EncodeTo(std::string* output, uint32_t extent_start);
@@ -103,6 +109,7 @@ class ZoneFile {
   uint64_t GetID() { return file_id_; }
   size_t GetUniqueId(char* id, size_t max_size);
 
+  std::vector<std::thread> thread_pool_;
  private:
   void ReleaseActiveZone();
   void SetActiveZone(Zone* zone);

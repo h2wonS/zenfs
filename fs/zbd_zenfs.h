@@ -6,14 +6,13 @@
 
 #pragma once
 
-#if !defined(ROCKSDB_LITE) && defined(OS_LINUX)
-
 #include <errno.h>
 #include <libzbd/zbd.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <thread>
 
 #include <atomic>
 #include <condition_variable>
@@ -39,6 +38,8 @@ class Zone {
   std::atomic_bool busy_;
 
  public:
+  int id_;
+
   explicit Zone(ZonedBlockDevice *zbd, struct zbd_zone *z);
 
   uint64_t start_;
@@ -126,7 +127,7 @@ class ZonedBlockDevice {
   IOStatus CheckScheduler();
 
   Zone *GetIOZone(uint64_t offset);
-
+  IOStatus AllocateZoneForSST(Zone **out_zone);
   IOStatus AllocateZone(Env::WriteLifeTimeHint file_lifetime, Zone **out_zone);
   IOStatus AllocateMetaZone(Zone **out_meta_zone);
 

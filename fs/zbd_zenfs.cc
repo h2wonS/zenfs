@@ -53,6 +53,7 @@ Zone::Zone(ZonedBlockDevice *zbd, struct zbd_zone *z)
       max_capacity_(zbd_zone_capacity(z)),
       wp_(zbd_zone_wp(z)),
       before_padding_wp_(0) {
+  id_ = start_ / max_capacity_;
   lifetime_ = Env::WLTH_NOT_SET;
   used_capacity_ = 0;
   capacity_ = 0;
@@ -83,7 +84,7 @@ bool Zone::IsEmpty() { return (wp_ == start_); }
 uint64_t Zone::GetZoneNr() { return start_ / zbd_->GetZoneSize(); }
 
 IOStatus Zone::CloseWR() {
-  assert(IsBusy());
+  //assert(IsBusy());
 
   IOStatus status = Close();
 
@@ -125,6 +126,7 @@ IOStatus Zone::Reset() {
     max_capacity_ = capacity_ = zbd_zone_capacity(&z);
 
   wp_ = start_;
+//  cns_wp_ = 0;
   lifetime_ = Env::WLTH_NOT_SET;
 
   return IOStatus::OK();
@@ -138,6 +140,7 @@ IOStatus Zone::Finish() {
   ret = zbd_finish_zones(fd, start_, zone_sz);
   if (ret) return IOStatus::IOError("Zone finish failed\n");
 
+  int id_;
   capacity_ = 0;
   wp_ = start_ + zone_sz;
   cns_wp_ = zone_sz;
@@ -553,6 +556,25 @@ Status ZonedBlockDevice::ResetUnusedIOZones() {
     }
   }
   return Status::OK();
+}
+
+IOStatus ZonedBlockDevice::AllocateZoneForSST(Zone **out_zone){
+ 
+ io_zones_mtx.lock();  
+  for(const auto z : io_zones){
+    if(z->GetZoneNr()<256) continue;
+    if(z->IsEmpty()){
+      if (z->Acquire()) {
+        *out_zone = z;
+        io_zones_mtx.unlock();
+        return IOStatus::OK();
+      } else {
+        continue;
+      }
+    }
+  }
+  io_zones_mtx.unlock();
+  assert(false);
 }
 
 IOStatus ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime,

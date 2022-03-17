@@ -26,7 +26,10 @@
 #include "rocksdb/env.h"
 #include "util/coding.h"
 
+#define NThread false
 namespace ROCKSDB_NAMESPACE {
+
+extern std::atomic<int> num_threads;
 
 ZoneExtent::ZoneExtent(uint64_t start, uint32_t length, Zone* zone)
     : start_(start), length_(length), zone_(zone) {}
@@ -219,6 +222,7 @@ ZoneFile::~ZoneFile() {
     assert(zone && zone->used_capacity_ >= (*e)->length_);
     zone->used_capacity_ -= (*e)->length_;
     delete *e;
+    zone->Reset(); 
   }
   IOStatus s = CloseWR();
   if (!s.ok()) {
@@ -354,12 +358,30 @@ IOStatus ZoneFile::PositionedRead(uint64_t offset, size_t n, Slice* result,
   return s;
 }
 
+void ZoneFile::PushExtent2(size_t wr_size) {
+/*  printf("filename = %s, extent_start = 0x%lx, length = %u\n"
+        , getFilename().c_str(), active_zone_->start_, wr_size);*/
+
+  extents_.push_back(new ZoneExtent(active_zone_->start_, wr_size, active_zone_));
+  active_zone_->used_capacity_ += wr_size;
+  extent_filepos_ = fileSize;
+}
+
 void ZoneFile::PushExtent() {
   uint64_t length;
 
-  assert(fileSize >= extent_filepos_);
+  if (fileSize < extent_filepos_) {
+    // When trucating this file, filesize may decrease.
+    extent_filepos_ = fileSize;
+  }
+
+  if (getFilename().substr(getFilename().size() - 3) == "sst") {
+    return;
+  }
 
   if (!active_zone_) return;
+
+  assert(fileSize >= extent_filepos_);
 
   length = fileSize - extent_filepos_;
   if (length == 0) return;
@@ -369,6 +391,98 @@ void ZoneFile::PushExtent() {
   active_zone_->used_capacity_ += length;
   extent_start_ = active_zone_->wp_;
   extent_filepos_ = fileSize;
+}
+
+static void thread_append(Zone *zone, char *data, uint32_t size, IODebugContext* dbg){
+  IOStatus s = zone->Append(data, size);
+  if(!s.ok()) {
+    printf("write error\n");
+    assert(false);
+  }
+
+  zone->Finish();
+//  printf("zone[%d], start_=0x%lx\n", zone->GetZoneNr(), zone->start_);
+  dbg->buf_->RefitTail(dbg->file_advance_, dbg->leftover_tail_);
+  delete dbg->buf_->Release();
+#if NThread
+  num_threads--;
+#endif
+}
+
+/* Assumes that data and size are block aligned */
+IOStatus ZoneFile::Append(void* data, int data_size, int valid_size, IODebugContext* dbg) {
+  uint32_t left = data_size;
+  uint32_t wr_size, offset = 0;
+  uint32_t tmp_cap;
+  IOStatus s = IOStatus::OK();
+
+  if(data_size != valid_size){
+    printf("diff data_size and valid_size\n");
+  }
+
+
+  Zone* zone = nullptr;
+  s = zbd_->AllocateZoneForSST(&zone);
+//  s = zbd_->AllocateZone(lifetime_, &zone);
+
+  if (!s.ok()) return s;
+
+  if (!zone) {
+    return IOStatus::NoSpace(
+        "Out of space: Zone allocation failure while setting active zone");
+  }
+
+  SetActiveZone(zone);
+  extent_start_ = active_zone_->wp_;
+  extent_filepos_ = fileSize;
+  
+  while (left) {
+    if (active_zone_->capacity_ == 0) {
+      PushExtent();
+
+      s = CloseActiveZone();
+      if (!s.ok()) {
+        return s;
+      }
+
+      Zone* zone = nullptr;
+      s = zbd_->AllocateZone(lifetime_, &zone);
+      if (!s.ok()) return s;
+
+      if (!zone) {
+        return IOStatus::NoSpace(
+            "Out of space: Zone allocation failure while replacing active "
+            "zone");
+      }
+
+      SetActiveZone(zone);
+
+      extent_start_ = active_zone_->wp_;
+      extent_filepos_ = fileSize;
+    }
+
+    wr_size = left;
+    if (wr_size > active_zone_->capacity_) wr_size = active_zone_->capacity_;
+
+//    s = active_zone_->Append((char*)data + offset, wr_size);
+//    if (!s.ok()) return s;
+//    thread_append(active_zone_, (char*)data + offset, wr_size, dbg);
+#if NThread
+    while(num_threads>=NThread){
+      
+    }
+    num_threads++;
+#endif
+    thread_pool_.push_back(std::thread(thread_append, active_zone_, (char*)data + offset, wr_size, dbg));
+    fileSize += wr_size;
+    left -= wr_size;
+    offset += wr_size;
+
+    PushExtent2(wr_size);
+  }
+
+  fileSize -= (data_size - valid_size);
+  return s;
 }
 
 /* Assumes that data and size are block aligned */
@@ -447,8 +561,8 @@ void ZoneFile::ReleaseActiveZone() {
 }
 
 void ZoneFile::SetActiveZone(Zone* zone) {
-  assert(active_zone_ == nullptr);
-  assert(zone->IsBusy());
+  // assert(active_zone_ == nullptr);
+  // assert(zone->IsBusy());
   active_zone_ = zone;
 }
 
@@ -502,6 +616,11 @@ IOStatus ZonedWritableFile::Fsync(const IOOptions& /*options*/,
   // Finish (actual write to zones) zone group
   // We need to keep going for the last footer metdata blocks.
 
+  for(auto& thread : zoneFile_->thread_pool_){
+    thread.join();
+  }
+  zoneFile_->thread_pool_.clear();
+
   buffer_mtx_.lock();
   s = FlushBuffer();
   buffer_mtx_.unlock();
@@ -541,7 +660,8 @@ IOStatus ZonedWritableFile::FlushBuffer() {
   IOStatus s;
 
   if (!buffer_pos) return IOStatus::OK();
-
+  
+//  align = buffer_pos % buffer_sz;
   align = buffer_pos % block_sz;
   if (align) pad_sz = block_sz - align;
 
@@ -594,6 +714,7 @@ IOStatus ZonedWritableFile::BufferedWrite(const Slice& slice) {
     blocks = data_left / block_sz;
     aligned_sz = block_sz * blocks;
 
+    //malloc
     ret = posix_memalign(&alignbuf, sysconf(_SC_PAGESIZE), aligned_sz);
     if (ret) {
       return IOStatus::IOError("failed allocating alignment write buffer\n");
@@ -637,7 +758,7 @@ IOStatus ZonedWritableFile::Append(const Slice& data,
 
 IOStatus ZonedWritableFile::PositionedAppend(const Slice& data, uint64_t offset,
                                              const IOOptions& /*options*/,
-                                             IODebugContext* /*dbg*/) {
+                                             IODebugContext* dbg) {
   IOStatus s;
 
   if (offset != wp) {
@@ -650,10 +771,10 @@ IOStatus ZonedWritableFile::PositionedAppend(const Slice& data, uint64_t offset,
     s = BufferedWrite(data);
     buffer_mtx_.unlock();
   } else {
-    s = zoneFile_->Append((void*)data.data(), data.size(), data.size());
+    s = zoneFile_->Append((void*)data.data(), data.size(), data.size(), dbg);
     if (s.ok()) wp += data.size();
+//    buffers_.push_back(dbg);
   }
-
   return s;
 }
 
