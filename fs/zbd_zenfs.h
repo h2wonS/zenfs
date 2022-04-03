@@ -81,6 +81,7 @@ class Zone {
   IOStatus CloseWR(); /* Done writing */
 
   inline IOStatus CheckRelease();
+  std::atomic<int> zone_lock;
 };
 
 class ZonedBlockDevice {
@@ -96,7 +97,6 @@ class ZonedBlockDevice {
   int read_direct_f_;
   int write_f_;
   time_t start_time_;
-  std::shared_ptr<Logger> logger_;
   uint32_t finish_threshold_ = 0;
 
   std::atomic<long> active_io_zones_;
@@ -117,6 +117,7 @@ class ZonedBlockDevice {
                       const std::vector<Zone *> zones);
 
  public:
+  std::shared_ptr<Logger> logger_;
   explicit ZonedBlockDevice(std::string bdevname,
                             std::shared_ptr<Logger> logger,
                             std::shared_ptr<ZenFSMetrics> metrics =
@@ -127,6 +128,7 @@ class ZonedBlockDevice {
   IOStatus CheckScheduler();
 
   Zone *GetIOZone(uint64_t offset);
+  IOStatus StaticAllocateZones(std::vector<Zone*> *zone_vec);
   IOStatus AllocateZoneForSST(Zone **out_zone);
   IOStatus AllocateZone(Env::WriteLifeTimeHint file_lifetime, Zone **out_zone);
   IOStatus AllocateMetaZone(Zone **out_meta_zone);

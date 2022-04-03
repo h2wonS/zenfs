@@ -28,9 +28,6 @@
 
 #define NThread false
 namespace ROCKSDB_NAMESPACE {
-
-extern std::atomic<int> num_threads;
-
 ZoneExtent::ZoneExtent(uint64_t start, uint32_t length, Zone* zone)
     : start_(start), length_(length), zone_(zone) {}
 
@@ -205,7 +202,16 @@ ZoneFile::ZoneFile(ZonedBlockDevice* zbd, std::string filename,
       filename_(filename),
       file_id_(file_id),
       nr_synced_extents_(0),
-      m_time_(0) {}
+      m_time_(0) {
+  IOStatus s = IOStatus::OK();
+  s = zbd->StaticAllocateZones(&static_zone_vec);     
+  if(!s.ok()) assert(false);
+  else{
+    Info(zbd_->logger_,"allocate zone vector filename = %s\n", filename_.c_str());
+    for(int i=0;i<22;i++) Info(zbd_->logger_,"zone = %d used_cap = %ld\n", static_zone_vec[i]->GetZoneNr(), static_zone_vec[i]->used_capacity_.load(std::memory_order_relaxed)/(long)1024/(long)1024);
+  }
+  for(int i=0;i<22;i++) zone_vec_lock[i]=0;
+      }
 
 std::string ZoneFile::GetFilename() { return filename_; }
 void ZoneFile::Rename(std::string name) { filename_ = name; }
@@ -222,7 +228,7 @@ ZoneFile::~ZoneFile() {
     assert(zone && zone->used_capacity_ >= (*e)->length_);
     zone->used_capacity_ -= (*e)->length_;
     delete *e;
-    zone->Reset(); 
+//    zone->Reset(); 
   }
   IOStatus s = CloseWR();
   if (!s.ok()) {
@@ -354,6 +360,9 @@ IOStatus ZoneFile::PositionedRead(uint64_t offset, size_t n, Slice* result,
     read = 0;
   }
 
+  if (read == 0) {
+      abort();
+  }
   *result = Slice((char*)scratch, read);
   return s;
 }
@@ -361,8 +370,8 @@ IOStatus ZoneFile::PositionedRead(uint64_t offset, size_t n, Slice* result,
 void ZoneFile::PushExtent2(size_t wr_size) {
 /*  printf("filename = %s, extent_start = 0x%lx, length = %u\n"
         , getFilename().c_str(), active_zone_->start_, wr_size);*/
-
-  extents_.push_back(new ZoneExtent(active_zone_->start_, wr_size, active_zone_));
+ 
+  extents_.push_back(new ZoneExtent(active_zone_->wp_, wr_size, active_zone_));
   active_zone_->used_capacity_ += wr_size;
   extent_filepos_ = fileSize;
 }
@@ -399,14 +408,10 @@ static void thread_append(Zone *zone, char *data, uint32_t size, IODebugContext*
     printf("write error\n");
     assert(false);
   }
-
-  zone->Finish();
-//  printf("zone[%d], start_=0x%lx\n", zone->GetZoneNr(), zone->start_);
+ zone->zone_lock = 0;
+//  zone->Finish();
   dbg->buf_->RefitTail(dbg->file_advance_, dbg->leftover_tail_);
   delete dbg->buf_->Release();
-#if NThread
-  num_threads--;
-#endif
 }
 
 /* Assumes that data and size are block aligned */
@@ -420,12 +425,58 @@ IOStatus ZoneFile::Append(void* data, int data_size, int valid_size, IODebugCont
     printf("diff data_size and valid_size\n");
   }
 
-
   Zone* zone = nullptr;
-  s = zbd_->AllocateZoneForSST(&zone);
-//  s = zbd_->AllocateZone(lifetime_, &zone);
+//Allocate zone from vector
+  int shit = 0;  
+  int get_zone = 0;
+  while(!get_zone){
+    bool left_zone = false;
+    shit++; 
+    if(shit>1000000){ 
+      abort();
+    }
+    
+    for(auto& atom : static_zone_vec){
+      if(atom->zone_lock == 0 && atom->capacity_ >= 5*192*1024){
 
-  if (!s.ok()) return s;
+        Info(zbd_->logger_, "zone vector print start\n");
+
+        for(auto& atomf : static_zone_vec){
+          if(atomf->zone_lock == 1){
+            Info(zbd_->logger_, "zone %d zone_lock = %d used_capacity = %.2ld\n", atomf->GetZoneNr(), 1, atomf->used_capacity_.load(std::memory_order_relaxed)/(long)1024/(long)1024);
+          }
+          else{
+            Info(zbd_->logger_, "zone %d zone_lock = %d used_capacity = %.2ld\n", atomf->GetZoneNr(), 0, atomf->used_capacity_.load(std::memory_order_relaxed)/(long)1024/(long)1024);
+          }
+        }
+        Info(zbd_->logger_, "zone vector print end\n");
+
+        zone = atom;
+        atom->zone_lock = 1;
+        get_zone = 1;
+        Info(zbd_->logger_, "lock get zone file = %s zone %d\n", filename_.c_str(), zone->GetZoneNr());
+
+        break;
+      }
+    }
+    if(get_zone == 0){
+      Info(zbd_->logger_, "wait file = %s", filename_.c_str());
+    }
+
+    for(auto& atom : static_zone_vec){
+      if(atom->GetCapacityLeft() >= 5*192*1024){
+        left_zone = true;
+        break;
+      }
+    }
+    if(!left_zone){
+      Zone* tmp_zone = nullptr;
+      IOStatus t = zbd_->AllocateZoneForSST(&tmp_zone);
+      static_zone_vec.push_back(tmp_zone);
+
+      Info(zbd_->logger_, "add zone %d to zone vector filename = %s", tmp_zone->GetZoneNr(), filename_.c_str());
+    }
+  }
 
   if (!zone) {
     return IOStatus::NoSpace(
@@ -434,53 +485,19 @@ IOStatus ZoneFile::Append(void* data, int data_size, int valid_size, IODebugCont
 
   SetActiveZone(zone);
   extent_start_ = active_zone_->wp_;
-  extent_filepos_ = fileSize;
+  extent_filepos_ = fileSize; 
+
+  wr_size = left;
+  if (wr_size > active_zone_->capacity_) wr_size = active_zone_->capacity_;
   
-  while (left) {
-    if (active_zone_->capacity_ == 0) {
-      PushExtent();
-
-      s = CloseActiveZone();
-      if (!s.ok()) {
-        return s;
-      }
-
-      Zone* zone = nullptr;
-      s = zbd_->AllocateZone(lifetime_, &zone);
-      if (!s.ok()) return s;
-
-      if (!zone) {
-        return IOStatus::NoSpace(
-            "Out of space: Zone allocation failure while replacing active "
-            "zone");
-      }
-
-      SetActiveZone(zone);
-
-      extent_start_ = active_zone_->wp_;
-      extent_filepos_ = fileSize;
-    }
-
-    wr_size = left;
-    if (wr_size > active_zone_->capacity_) wr_size = active_zone_->capacity_;
-
-//    s = active_zone_->Append((char*)data + offset, wr_size);
-//    if (!s.ok()) return s;
-//    thread_append(active_zone_, (char*)data + offset, wr_size, dbg);
-#if NThread
-    while(num_threads>=NThread){
-      
-    }
-    num_threads++;
-#endif
-    thread_pool_.push_back(std::thread(thread_append, active_zone_, (char*)data + offset, wr_size, dbg));
-    fileSize += wr_size;
-    left -= wr_size;
-    offset += wr_size;
-
-    PushExtent2(wr_size);
-  }
-
+  PushExtent2(wr_size);
+  
+  thread_pool_.push_back(std::thread(thread_append, active_zone_, (char*)data + offset, wr_size, dbg));
+//  thread_append(active_zone_, (char*)data + offset, wr_size, dbg);
+  fileSize += wr_size;
+  left -= wr_size;
+  offset += wr_size;
+  
   fileSize -= (data_size - valid_size);
   return s;
 }
@@ -621,6 +638,14 @@ IOStatus ZonedWritableFile::Fsync(const IOOptions& /*options*/,
   }
   zoneFile_->thread_pool_.clear();
 
+  for(auto& zone : zoneFile_->static_zone_vec){
+    zone->Finish();
+  }
+  zoneFile_->static_zone_vec.clear();
+  
+  if(zoneFile_->GetZbd()){
+    Info(zoneFile_->GetZbd()->logger_, "here is Fsync file %s\n", zoneFile_->GetFilename().c_str());
+  }
   buffer_mtx_.lock();
   s = FlushBuffer();
   buffer_mtx_.unlock();
@@ -664,7 +689,7 @@ IOStatus ZonedWritableFile::FlushBuffer() {
 //  align = buffer_pos % buffer_sz;
   align = buffer_pos % block_sz;
   if (align) pad_sz = block_sz - align;
-
+  
   if (pad_sz) memset((char*)buffer + buffer_pos, 0x0, pad_sz);
 
   wr_sz = buffer_pos + pad_sz;

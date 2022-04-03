@@ -74,6 +74,7 @@ Zone::Zone(ZonedBlockDevice *zbd, struct zbd_zone *z)
 
   if (!(zbd_zone_full(z) || zbd_zone_offline(z) || zbd_zone_rdonly(z)))
     capacity_ = zbd_zone_capacity(z) - (zbd_zone_wp(z) - zbd_zone_start(z));
+  zone_lock = 0;
 
 }
 
@@ -556,6 +557,28 @@ Status ZonedBlockDevice::ResetUnusedIOZones() {
     }
   }
   return Status::OK();
+}
+
+IOStatus ZonedBlockDevice::StaticAllocateZones(std::vector<Zone*> *zone_vec){
+ io_zones_mtx.lock();
+ int vec_size = 0;
+  for(const auto z : io_zones){
+    if(z->GetZoneNr()<256) continue;
+    if(z->IsEmpty()){
+      if (z->Acquire()) {
+        zone_vec->push_back(z);
+        vec_size++;
+        if(vec_size == 22){ 
+          io_zones_mtx.unlock();
+          return IOStatus::OK();
+        }
+      } else {
+        continue;
+      }
+    }
+  }
+  io_zones_mtx.unlock();
+  assert(false);
 }
 
 IOStatus ZonedBlockDevice::AllocateZoneForSST(Zone **out_zone){
