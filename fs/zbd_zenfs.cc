@@ -46,6 +46,8 @@
 
 namespace ROCKSDB_NAMESPACE {
 
+std::shared_ptr<Logger> _logger;
+
 Zone::Zone(ZonedBlockDevice *zbd, struct zbd_zone *z)
     : zbd_(zbd),
       busy_(false),
@@ -227,6 +229,7 @@ ZonedBlockDevice::ZonedBlockDevice(std::string bdevname,
                                    std::shared_ptr<ZenFSMetrics> metrics)
     : filename_("/dev/" + bdevname), logger_(logger), metrics_(metrics) {
   Info(logger_, "New Zoned Block Device: %s", filename_.c_str());
+  _logger = logger_;
 }
 
 std::string ZonedBlockDevice::ErrorToString(int err) {

@@ -45,7 +45,8 @@ class ZoneFile {
   // write (arith), read if ( 3 < nr_threads.load())
   std::atomic<int> nr_threads;
   std::vector<Zone*> static_zone_vec;
-  std::atomic<int> zone_vec_lock[22]; 
+  std::atomic<int> zone_vec_lock[22];
+  std::atomic<int> position; 
  protected:
   ZonedBlockDevice* zbd_;
   std::vector<ZoneExtent*> extents_;
