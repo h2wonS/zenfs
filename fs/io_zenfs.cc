@@ -408,13 +408,13 @@ void ZoneFile::PushExtent() {
 
 static void thread_append(Zone *zone, char *data, uint32_t size, IODebugContext* dbg){
   
-  Info(_logger, "zone %d thread_append start\n", zone->GetZoneNr());
+  //Info(_logger, "zone %d thread_append start\n", zone->GetZoneNr());
   IOStatus s = zone->Append(data, size);
   if(!s.ok()) {
     printf("write error\n");
     assert(false);
   }
-  Info(_logger, "zone %d thread_append end\n", zone->GetZoneNr());
+  //Info(_logger, "zone %d thread_append end\n", zone->GetZoneNr());
   zone->zone_lock = 0;
 //  zone->Finish();
   dbg->buf_->RefitTail(dbg->file_advance_, dbg->leftover_tail_);
@@ -441,7 +441,12 @@ IOStatus ZoneFile::Append(void* data, int data_size, int valid_size, IODebugCont
     shit++; 
     if(shit>10000000){
 //      position = 0;
-      abort();
+
+      Zone* tmp_zone = nullptr;
+      IOStatus t = zbd_->AllocateZoneForSST(&tmp_zone);
+      static_zone_vec.push_back(tmp_zone);
+      //abort();
+
     }
     
     for(int j=position;j<static_zone_vec.size();j++){
