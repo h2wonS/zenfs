@@ -494,10 +494,11 @@ IOStatus ZoneFile::Append(void* data, int data_size, int valid_size, IODebugCont
       }
     }
     if(!left_zone){
-      Zone* tmp_zone = nullptr;
-      IOStatus t = zbd_->AllocateZoneForSST(&tmp_zone);
-      static_zone_vec.push_back(tmp_zone);
-
+      for(int k=0;k<22;k++){
+        Zone* tmp_zone = nullptr;
+        IOStatus t = zbd_->AllocateZoneForSST(&tmp_zone);
+        static_zone_vec.push_back(tmp_zone);
+      }
 //      Info(zbd_->logger_, "add zone %d to zone vector filename = %s", tmp_zone->GetZoneNr(), filename_.c_str());
     }
     position = 0;
