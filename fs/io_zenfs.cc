@@ -431,62 +431,24 @@ IOStatus ZoneFile::Append(void* data, int data_size, int valid_size, IODebugCont
   if(data_size != valid_size){
     printf("diff data_size and valid_size\n");
   }
-
+  
   Zone* zone = nullptr;
 //Allocate zone from vector
-  int shit = 0;
   int get_zone = 0;
+  
   while(!get_zone){
     bool left_zone = false;
-    shit++; 
-    if(shit>10000000){
-//      position = 0;
-      abort();
-    }
-    
-    for(int j=position;j<static_zone_vec.size();j++){
-      auto& atom = static_zone_vec[j];
-      
+      auto& atom = static_zone_vec[position]; 
       if(atom->zone_lock == 0 && atom->capacity_ >= 5*192*1024){ 
         zone = atom;
         atom->zone_lock = 1;
         get_zone = 1;
-        position = j+1;
+        position = position+1;
         if(position == static_zone_vec.size()) position = 0;
 //        Info(zbd_->logger_, "lock get zone file = %s zone %d\n", filename_.c_str(), zone->GetZoneNr());
         break;
       }
-    }
 /*
-
-    for(auto& atom : static_zone_vec){
-      if(atom->zone_lock == 0 && atom->capacity_ >= 5*192*1024){
-
-        Info(zbd_->logger_, "zone vector print start\n");
-
-        for(auto& atomf : static_zone_vec){
-          if(atomf->zone_lock == 1){
-            Info(zbd_->logger_, "zone %d zone_lock = %d used_capacity = %.2ld\n", atomf->GetZoneNr(), 1, atomf->used_capacity_.load(std::memory_order_relaxed)/(long)1024/(long)1024);
-          }
-          else{
-            Info(zbd_->logger_, "zone %d zone_lock = %d used_capacity = %.2ld\n", atomf->GetZoneNr(), 0, atomf->used_capacity_.load(std::memory_order_relaxed)/(long)1024/(long)1024);
-          }
-        }
-        Info(zbd_->logger_, "zone vector print end\n");
-
-        zone = atom;
-        atom->zone_lock = 1;
-        get_zone = 1;
-        position++;
-        Info(zbd_->logger_, "lock get zone file = %s zone %d\n", filename_.c_str(), zone->GetZoneNr());
-
-        break;
-      }
-    }*/
-    if(get_zone == 0){
-//      Info(zbd_->logger_, "wait file = %s", filename_.c_str());
-    }
-
     for(auto& atom : static_zone_vec){
       if(atom->GetCapacityLeft() >= 5*192*1024){
         left_zone = true;
@@ -494,13 +456,13 @@ IOStatus ZoneFile::Append(void* data, int data_size, int valid_size, IODebugCont
       }
     }
     if(!left_zone){
-      Zone* tmp_zone = nullptr;
-      IOStatus t = zbd_->AllocateZoneForSST(&tmp_zone);
-      static_zone_vec.push_back(tmp_zone);
-
-//      Info(zbd_->logger_, "add zone %d to zone vector filename = %s", tmp_zone->GetZoneNr(), filename_.c_str());
-    }
-    position = 0;
+      for(int k=0;k<22;k++){
+        Zone* tmp_zone = nullptr;
+        IOStatus t = zbd_->AllocateZoneForSST(&tmp_zone);
+        static_zone_vec.push_back(tmp_zone);
+      }
+      Info(zbd_->logger_, "add 22 zone to zone vector filename = %s", filename_.c_str());
+    }*/
   }
 
   if (!zone) {
@@ -517,8 +479,9 @@ IOStatus ZoneFile::Append(void* data, int data_size, int valid_size, IODebugCont
   
   PushExtent2(wr_size);
   
+//  Info(zbd_->logger_, "add write thread filename = %s zone %d", filename_.c_str(), active_zone_->GetZoneNr());
+  
   thread_pool_.push_back(std::thread(thread_append, active_zone_, (char*)data + offset, wr_size, dbg));
-//  thread_append(active_zone_, (char*)data + offset, wr_size, dbg);
   fileSize += wr_size;
   left -= wr_size;
   offset += wr_size;
@@ -654,30 +617,28 @@ IOStatus ZonedWritableFile::Truncate(uint64_t size,
 IOStatus ZonedWritableFile::Fsync(const IOOptions& /*options*/,
                                   IODebugContext* /*dbg*/) {
   IOStatus s;
-
   // Finish (actual write to zones) zone group
   // We need to keep going for the last footer metdata blocks.
 
-  Info(zoneFile_->GetZbd()->logger_, "Fsync file %s start!\n", zoneFile_->GetFilename().c_str());
+//  Info(zoneFile_->GetZbd()->logger_, "Fsync file %s start!\n", zoneFile_->GetFilename().c_str());
   
-
   for(auto& thread : zoneFile_->thread_pool_){
     thread.join();
   }
   zoneFile_->thread_pool_.clear();
 
+//  Info(zoneFile_->GetZbd()->logger_, "Fsync file %s end!\n", zoneFile_->GetFilename().c_str());
 
-  Info(zoneFile_->GetZbd()->logger_, "Fsync file %s end!\n", zoneFile_->GetFilename().c_str());
+//  for(auto& zone : zoneFile_->static_zone_vec){
+//    Info(zoneFile_->GetZbd()->logger_, "file %s end! zone cap = %ld \n", zoneFile_->GetFilename().c_str(), zone->capacity_);
+//  }
 
   for(auto& zone : zoneFile_->static_zone_vec){
     zone->Finish();
   }
   zoneFile_->static_zone_vec.clear();
-  
-  if(zoneFile_->GetZbd()){
-    Info(zoneFile_->GetZbd()->logger_, "here is Fsync file %s\n", zoneFile_->GetFilename().c_str());
-  }
-  buffer_mtx_.lock();
+ 
+   buffer_mtx_.lock();
   s = FlushBuffer();
   buffer_mtx_.unlock();
   if (!s.ok()) {
