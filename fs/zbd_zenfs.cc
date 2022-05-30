@@ -162,6 +162,57 @@ IOStatus Zone::Close() {
   return IOStatus::OK();
 }
 
+IOStatus Zone::Append(char *data, uint32_t size) { 
+  char *ptr = data;
+  uint32_t left = size;
+  int fd = zbd_->GetWriteFD();
+  int ret;
+  // NOWS: Namespace Optimal Write Size
+  uint32_t unit = 192 * KB;
+
+  if (capacity_ < size) {
+    printf("zone %ld capacity full\n", GetZoneNr());
+    return IOStatus::NoSpace("Not enough capacity for append");
+  }
+
+  assert((size % zbd_->GetBlockSize()) == 0);
+
+  while (left) {
+    if(left<unit){
+      void *pad;
+
+      posix_memalign(&pad, sysconf(_SC_PAGESIZE), 192*1024);
+      memcpy(pad, ptr, left);
+
+      //      Info(_logger, "num_writer = %d\n",num_writer.load());
+      //      set_num_writer(num_writer.load());
+      //      num_writer++;
+      ret = pwrite(fd, pad, unit, wp_);
+      //      num_writer--;
+      free(pad);
+    } 
+    else{
+      //      Info(_logger, "num_writer = %d\n",num_writer.load());
+      //      num_writer++;
+      ret = pwrite(fd, ptr, unit, wp_);
+      //      num_writer--;
+    }
+    if (ret < 0) return IOStatus::IOError("Write failed");
+    assert(ret == (int) unit); 
+    ptr += ret;
+    wp_ += ret;
+    capacity_ -= ret;
+
+    if(left<ret) left=0;
+    else left -= ret;
+  }   
+
+  return IOStatus::OK();
+}
+
+
+
+#if 0
 IOStatus Zone::Append(char *data, uint32_t size) {
   char *ptr = data;
   uint32_t left = size;
@@ -201,6 +252,7 @@ IOStatus Zone::Append(char *data, uint32_t size) {
 
   return IOStatus::OK();
 }
+#endif
 
 inline IOStatus Zone::CheckRelease() {
   if (!Release()) {
