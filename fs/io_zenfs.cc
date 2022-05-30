@@ -211,6 +211,7 @@ ZoneFile::ZoneFile(ZonedBlockDevice* zbd, std::string filename,
     for(int i=0;i<22;i++) Info(zbd_->logger_,"zone = %d used_cap = %ld\n", static_zone_vec[i]->GetZoneNr(), static_zone_vec[i]->used_capacity_.load(std::memory_order_relaxed)/(long)1024/(long)1024);
   }
   for(int i=0;i<22;i++) zone_vec_lock[i]=0;
+  position=0;
       }
 
 std::string ZoneFile::GetFilename() { return filename_; }
@@ -431,38 +432,18 @@ IOStatus ZoneFile::Append(void* data, int data_size, int valid_size, IODebugCont
   int get_zone = 0;
   while(!get_zone){
     bool left_zone = false;
-    shit++; 
-    if(shit>1000000){ 
-      abort();
-    }
     
-    for(auto& atom : static_zone_vec){
-      if(atom->zone_lock == 0 && atom->capacity_ >= 5*192*1024){
-
-        Info(zbd_->logger_, "zone vector print start\n");
-
-        for(auto& atomf : static_zone_vec){
-          if(atomf->zone_lock == 1){
-            Info(zbd_->logger_, "zone %d zone_lock = %d used_capacity = %.2ld\n", atomf->GetZoneNr(), 1, atomf->used_capacity_.load(std::memory_order_relaxed)/(long)1024/(long)1024);
-          }
-          else{
-            Info(zbd_->logger_, "zone %d zone_lock = %d used_capacity = %.2ld\n", atomf->GetZoneNr(), 0, atomf->used_capacity_.load(std::memory_order_relaxed)/(long)1024/(long)1024);
-          }
-        }
-        Info(zbd_->logger_, "zone vector print end\n");
-
-        zone = atom;
-        atom->zone_lock = 1;
-        get_zone = 1;
-        Info(zbd_->logger_, "lock get zone file = %s zone %d\n", filename_.c_str(), zone->GetZoneNr());
-
-        break;
-      }
+    auto& atom = static_zone_vec[position]; 
+    if(atom->zone_lock == 0 && atom->capacity_ >= 5*192*1024){ 
+      zone = atom;
+      atom->zone_lock = 1;
+      get_zone = 1;
+      position = position+1;
+      if(position == static_zone_vec.size()) position = 0;
+      //        Info(zbd_->logger_, "lock get zone file = %s zone %d\n", filename_.c_str(), zone->GetZoneNr());
+      break;
     }
-    if(get_zone == 0){
-      Info(zbd_->logger_, "wait file = %s", filename_.c_str());
-    }
-
+/*
     for(auto& atom : static_zone_vec){
       if(atom->GetCapacityLeft() >= 5*192*1024){
         left_zone = true;
@@ -476,6 +457,7 @@ IOStatus ZoneFile::Append(void* data, int data_size, int valid_size, IODebugCont
 
       Info(zbd_->logger_, "add zone %d to zone vector filename = %s", tmp_zone->GetZoneNr(), filename_.c_str());
     }
+    */
   }
 
   if (!zone) {

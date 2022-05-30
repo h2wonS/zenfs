@@ -43,6 +43,7 @@ class ZoneExtent {
 class ZoneFile {
  public:
   // write (arith), read if ( 3 < nr_threads.load())
+  int position;
   std::atomic<int> nr_threads;
   std::vector<Zone*> static_zone_vec;
   std::atomic<int> zone_vec_lock[22]; 

@@ -1149,7 +1149,7 @@ std::map<std::string, Env::WriteLifeTimeHint> ZenFS::GetWriteLifeTimeHints() {
   return hint_map;
 }
 
-//#ifndef NDEBUG
+#ifndef NDEBUG
 static std::string GetLogFilename(std::string bdev) {
   std::ostringstream ss;
   time_t t = time(0);
@@ -1161,21 +1161,21 @@ static std::string GetLogFilename(std::string bdev) {
 
   return ss.str();
 }
-//#endif
+#endif
 
 Status NewZenFS(FileSystem** fs, const std::string& bdevname,
                 std::shared_ptr<ZenFSMetrics> metrics) {
   std::shared_ptr<Logger> logger;
   Status s;
 
-//#ifndef NDEBUG
+#ifndef NDEBUG
   s = Env::Default()->NewLogger(GetLogFilename(bdevname), &logger);
   if (!s.ok()) {
     fprintf(stderr, "ZenFS: Could not create logger");
   } else {
     logger->SetInfoLogLevel(DEBUG_LEVEL);
   }
-//#endif
+#endif
 
   ZonedBlockDevice* zbd = new ZonedBlockDevice(bdevname, logger, metrics);
   IOStatus zbd_status = zbd->Open(false, true);
