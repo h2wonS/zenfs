@@ -438,16 +438,16 @@ IOStatus ZoneFile::Append(void* data, int data_size, int valid_size, IODebugCont
   
   while(!get_zone){
     bool left_zone = false;
-      auto& atom = static_zone_vec[position]; 
-      if(atom->zone_lock == 0 && atom->capacity_ >= 5*192*1024){ 
-        zone = atom;
-        atom->zone_lock = 1;
-        get_zone = 1;
-        position = position+1;
-        if(position == static_zone_vec.size()) position = 0;
+    auto& atom = static_zone_vec[position]; 
+    if(atom->zone_lock == 0 && atom->capacity_ >= 5*192*1024){ 
+      zone = atom;
+      atom->zone_lock = 1;
+      get_zone = 1;
+      position = position+1;
+      if(position == static_zone_vec.size()) position = 0;
 //        Info(zbd_->logger_, "lock get zone file = %s zone %d\n", filename_.c_str(), zone->GetZoneNr());
-        break;
-      }
+      break;
+    }
 /*
     for(auto& atom : static_zone_vec){
       if(atom->GetCapacityLeft() >= 5*192*1024){
