@@ -48,6 +48,10 @@ namespace ROCKSDB_NAMESPACE {
 
 std::shared_ptr<Logger> _logger;
 
+ZoneChunk::ZoneChunk(std::string smallest, std::string largest)
+    : smallest(smallest),
+      largest(largest) {}
+
 Zone::Zone(ZonedBlockDevice *zbd, struct zbd_zone *z)
     : zbd_(zbd),
       busy_(false),

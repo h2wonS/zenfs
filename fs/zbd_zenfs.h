@@ -21,17 +21,26 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <list>
 
 #include "metrics.h"
 #include "rocksdb/env.h"
 #include "rocksdb/io_status.h"
-#include "/home/jelee/rocksdb/util/aligned_buffer.h"
+#include "/home/hwshin/exp_hynix/rocksdb/util/aligned_buffer.h"
 
 
 namespace ROCKSDB_NAMESPACE {
 
 class ZonedBlockDevice;
 class ZoneSnapshot;
+
+class ZoneChunk {
+ public:
+  std::string smallest;
+  std::string largest;
+
+  explicit ZoneChunk(std::string smallest, std::string largest);
+};
 
 class Zone {
   ZonedBlockDevice *zbd_;
@@ -41,6 +50,7 @@ class Zone {
   int id_;
 
   explicit Zone(ZonedBlockDevice *zbd, struct zbd_zone *z);
+  std::list<ZoneChunk *> chunk_list;
 
   uint64_t start_;
   uint64_t capacity_; /* remaining capacity */
@@ -51,6 +61,18 @@ class Zone {
   int cns_fd;
   Env::WriteLifeTimeHint lifetime_;
   std::atomic<long> used_capacity_;
+ // std::list<ZoneChunk*>::iterator chunk_list_iter = chunk_list.begin();
+  void PushChunk(ZoneChunk* chunk) {
+    chunk_list.push_back(chunk);
+  }
+
+  std::string getSmallest() {
+    return (chunk_list.back())->smallest;
+  }
+
+  std::string getLargest() {
+    return (chunk_list.back())->largest;
+  }
 
   IOStatus Reset();
   IOStatus Finish();

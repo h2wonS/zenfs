@@ -76,7 +76,8 @@ class ZoneFile {
   void OpenWR();
   IOStatus CloseWR();
   bool IsOpenForWR();
-  IOStatus Append(void* data, int data_size, int valid_size, IODebugContext* dbg);
+  IOStatus Append(void* data, int data_size, int valid_size, IODebugContext* dbg,
+                  std::string smallest, std::string largest);
   IOStatus Append(void* data, int data_size, int valid_size);
   IOStatus SetWriteLifeTimeHint(Env::WriteLifeTimeHint lifetime);
   std::string GetFilename();
@@ -170,6 +171,10 @@ class ZonedWritableFile : public FSWritableFile {
   virtual Env::WriteLifeTimeHint GetWriteLifeTimeHint() override {
     return zoneFile_->GetWriteLifeTimeHint();
   }
+ 
+ public:
+  std::string smallest;
+  std::string largest;
 
  private:
   IOStatus BufferedWrite(const Slice& data);
