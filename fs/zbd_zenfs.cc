@@ -28,6 +28,7 @@
 #include <vector>
 
 #include "rocksdb/env.h"
+#include "rocksdb/slice.h"
 #include "rocksdb/io_status.h"
 #include "snapshot.h"
 
@@ -48,10 +49,11 @@ namespace ROCKSDB_NAMESPACE {
 
 std::shared_ptr<Logger> _logger;
 
-ZoneChunk::ZoneChunk(std::string smallest, std::string largest)
-    : smallest(smallest),
-      largest(largest) {}
-
+ZoneChunk::ZoneChunk(char* smallest, char* largest, int zoneid)
+  : smallest_(smallest),
+  largest_(largest),
+  zoneid_(zoneid) {}
+   
 Zone::Zone(ZonedBlockDevice *zbd, struct zbd_zone *z)
     : zbd_(zbd),
       busy_(false),

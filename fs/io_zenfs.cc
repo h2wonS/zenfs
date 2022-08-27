@@ -268,7 +268,6 @@ void ZoneFile::OpenWR() { open_for_wr_ = true; }
 bool ZoneFile::IsOpenForWR() { return open_for_wr_; }
 
 ZoneExtent* ZoneFile::GetExtent(uint64_t file_offset, uint64_t* dev_offset) {
-  /* need to update chunk offset, dev_offset += chunk_offset */
   for (unsigned int i = 0; i < extents_.size(); i++) {
   //printf("GetExtent:: filename = %s, extent_start = 0x%lx, length = %u\n"
   //      , getFilename().c_str(), extents_[i]->start_, extents_[i]->length_);
@@ -329,21 +328,21 @@ IOStatus ZoneFile::PositionedRead(uint64_t offset, size_t n, Slice* result,
     /* We may get some unaligned direct reads due to non-aligned extent lengths,
      * so fall back on non-direct-io in that case.
      */
- // printf("PositionedRead:: filename = %s, extent_start = 0x%lx, preadsize = %u\n"
- //       , getFilename().c_str(), extent->start_, pread_sz);
-  
-  /*if (getFilename().substr(getFilename().size() - 3) == "sst") {
-  printf("SmallestKey=");
-  for (int i=0; i<26; i++){
-    printf("%x", extent->zone_->getSmallest()[i]);
-  }
-  printf("\n");
- printf("LargestKey=");
-  for (int i=0; i<26; i++){
-    printf("%x", extent->zone_->getLargest()[i]);
-  }
-  printf("\n");
-}*/
+    printf("PositionedRead:: filename = %s, extent_start = 0x%lx, preadsize = %u, Zone#=%ld\n"
+        , getFilename().c_str(), extent->start_, pread_sz, extent->zone_->GetZoneNr());
+
+    if (getFilename().substr(getFilename().size() - 3) == "sst") {
+      printf("SmallestKey=");
+      for (int i=0; i<26; i++){
+        printf("%x", extent->zone_->getSmallest()[i]);
+      }
+      printf("\t");
+      printf("LargestKey=");
+      for (int i=0; i<26; i++){
+        printf("%x", extent->zone_->getLargest()[i]);
+      }
+      printf("\n");
+    }
     bool aligned = (pread_sz % zbd_->GetBlockSize() == 0);
     if (direct && aligned) {
       r = pread(f_direct, ptr, pread_sz, r_off);
@@ -455,7 +454,7 @@ static void thread_append(Zone *zone, char *data, uint32_t size, IODebugContext*
 
 /* Assumes that data and size are block aligned */
 IOStatus ZoneFile::Append(void* data, int data_size, int valid_size, IODebugContext* dbg,
-                          std::string smallest, std::string largest) {
+                          char* smallest, char* largest, int s_len, int l_len) {
   uint32_t left = data_size;
   uint32_t wr_size, offset = 0;
   uint32_t tmp_cap;
@@ -466,7 +465,6 @@ IOStatus ZoneFile::Append(void* data, int data_size, int valid_size, IODebugCont
   }
   
   Zone* zone = nullptr;
-  ZoneChunk* chunk = nullptr;
 //Allocate zone from vector
   int get_zone = 0;
   
@@ -496,23 +494,39 @@ IOStatus ZoneFile::Append(void* data, int data_size, int valid_size, IODebugCont
   wr_size = left;
   if (wr_size > active_zone_->capacity_) wr_size = active_zone_->capacity_;
 
-  active_zone_->PushChunk(new ZoneChunk(smallest, largest)); 
-if (getFilename().substr(getFilename().size() - 3) == "sst") {
-  printf("PushedChunk= Smallest=%p Largest=%p\n", smallest, largest);
-  printf("SmallestKey=");
-  for (int i=0; i<26; i++){
-    printf("%x", smallest[i]);
+  if (getFilename().substr(getFilename().size() - 3) == "sst") {
+    ZoneChunk* chunk = new ZoneChunk(nullptr, nullptr,0);
+
+    chunk->smallest_ = new char[s_len+1];
+    chunk->largest_ = new char[l_len+1];
+    for(int i=0; i<s_len; i++){
+      chunk->smallest_[i] = smallest[i];
+    }
+    for(int i=0; i<l_len; i++){
+      chunk->largest_[i] = largest[i];
+    }
+    chunk->zoneid_ = active_zone_->GetZoneNr();
+
+    active_zone_->PushChunk(chunk); 
+
+    printf("%s PushedChunk Zone#=%ld\t", getFilename().c_str(), chunk->zoneid_);
+    printf("SmallestKey=");
+    for (int i=0; i<26; i++){
+      printf("%x", active_zone_->chunk_list.back()->smallest_[i]);
+    }
+    printf("\t");
+    printf("LargestKey=");
+    for (int i=0; i<26; i++){
+      printf("%x", active_zone_->chunk_list.back()->largest_[i]);
+    }
+    printf("\n");
+
   }
-  printf("\n");
- printf("LargestKey=");
-  for (int i=0; i<26; i++){
-    printf("%x", largest[i]);
-  }
-  printf("\n");
-}
+
+
   PushExtent2(wr_size);
-  
-//  Info(zbd_->logger_, "add write thread filename = %s zone %d", filename_.c_str(), active_zone_->GetZoneNr());
+
+  //  Info(zbd_->logger_, "add write thread filename = %s zone %d", filename_.c_str(), active_zone_->GetZoneNr());
   
   thread_pool_.push_back(std::thread(thread_append, active_zone_, (char*)data + offset, wr_size, dbg));
   fileSize += wr_size;
@@ -617,8 +631,6 @@ ZonedWritableFile::ZonedWritableFile(ZonedBlockDevice* zbd, bool _buffered,
 
   zoneFile_ = zoneFile;
   
-  //smallest = "";
-  //largest = "";
 
   if (buffered) {
     int ret = posix_memalign((void**)&buffer, sysconf(_SC_PAGESIZE), buffer_sz);
@@ -809,23 +821,6 @@ IOStatus ZonedWritableFile::Append(const Slice& data,
   return s;
 }
 
-/*void ZonedWritableFile::assignSmallestKey(const Slice& key){
-  smallest = key.data();
-  printf("zonedwritablefile_smallest_key= %p\n", smallest);
-  for(int i=0; i<26;i++){
-    printf("%x",smallest[i]);
-  }
-  printf("\n");
-}
-void ZonedWritableFile::assignLargestKey(const Slice& key){
-  largest = key.data();
-  printf("zonedwritablefile_largest_key= %p\n", largest);
-  for(int i=0; i<26;i++){
-    printf("%x",largest[i]);
-  }
-  printf("\n");
-}*/
-
 
 IOStatus ZonedWritableFile::PositionedAppend(const Slice& data, uint64_t offset,
                                              const IOOptions& /*options*/,
@@ -842,7 +837,7 @@ IOStatus ZonedWritableFile::PositionedAppend(const Slice& data, uint64_t offset,
     s = BufferedWrite(data);
     buffer_mtx_.unlock();
   } else {
-    s = zoneFile_->Append((void*)data.data(), data.size(), data.size(), dbg, smallest, largest);
+    s = zoneFile_->Append((void*)data.data(), data.size(), data.size(), dbg, smallest, largest, s_len, l_len);
     if (s.ok()) wp += data.size();
 //    buffers_.push_back(dbg);
   }

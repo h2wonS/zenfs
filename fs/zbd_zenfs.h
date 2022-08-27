@@ -26,6 +26,7 @@
 #include "metrics.h"
 #include "rocksdb/env.h"
 #include "rocksdb/io_status.h"
+#include "rocksdb/slice.h"
 #include "/home/hwshin/exp_hynix/rocksdb/util/aligned_buffer.h"
 
 
@@ -36,10 +37,11 @@ class ZoneSnapshot;
 
 class ZoneChunk {
  public:
-  std::string smallest;
-  std::string largest;
+  char* smallest_;
+  char* largest_;
+  int zoneid_;
 
-  explicit ZoneChunk(std::string smallest, std::string largest);
+  explicit ZoneChunk(char* smallest, char* largest, int zoneid);
 };
 
 class Zone {
@@ -66,12 +68,12 @@ class Zone {
     chunk_list.push_back(chunk);
   }
 
-  std::string getSmallest() {
-    return (chunk_list.back())->smallest;
+  const char* getSmallest() {
+    return (chunk_list.front())->smallest_;
   }
 
-  std::string getLargest() {
-    return (chunk_list.back())->largest;
+  const char* getLargest() {
+    return (chunk_list.back())->largest_;
   }
 
   IOStatus Reset();
