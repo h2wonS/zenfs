@@ -49,10 +49,13 @@ namespace ROCKSDB_NAMESPACE {
 
 std::shared_ptr<Logger> _logger;
 
-ZoneChunk::ZoneChunk(char* smallest, char* largest, int zoneid)
+ZoneChunk::ZoneChunk(char* smallest, char* largest, int zoneid, int extentid, uint64_t extentstart, bool isValid)
   : smallest_(smallest),
   largest_(largest),
-  zoneid_(zoneid) {}
+  zoneid_(zoneid),
+  extentid_(extentid),
+  extentstart_(extentstart),
+  isValid_(isValid) {}
    
 Zone::Zone(ZonedBlockDevice *zbd, struct zbd_zone *z)
     : zbd_(zbd),
@@ -570,14 +573,12 @@ Status ZonedBlockDevice::ResetUnusedIOZones() {
 
 IOStatus ZonedBlockDevice::StaticAllocateZones(std::vector<Zone*> *zone_vec){
  io_zones_mtx.lock();
- int vec_size = 0;
   for(const auto z : io_zones){
     if(z->GetZoneNr()<256) continue;
     if(z->IsEmpty()){
       if (z->Acquire()) {
         zone_vec->push_back(z);
-        vec_size++;
-        if(vec_size == 22){ 
+        if(zone_vec->size() == 22){ 
           io_zones_mtx.unlock();
           return IOStatus::OK();
         }

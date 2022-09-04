@@ -40,8 +40,12 @@ class ZoneChunk {
   char* smallest_;
   char* largest_;
   int zoneid_;
+  int extentid_;
+  uint64_t extentstart_;
+  bool isValid_;
 
-  explicit ZoneChunk(char* smallest, char* largest, int zoneid);
+
+  explicit ZoneChunk(char* smallest, char* largest, int zoneid, int extentid, uint64_t extentstart, bool isValid);
 };
 
 class Zone {
@@ -63,17 +67,45 @@ class Zone {
   int cns_fd;
   Env::WriteLifeTimeHint lifetime_;
   std::atomic<long> used_capacity_;
- // std::list<ZoneChunk*>::iterator chunk_list_iter = chunk_list.begin();
+
   void PushChunk(ZoneChunk* chunk) {
     chunk_list.push_back(chunk);
   }
-
-  const char* getSmallest() {
-    return (chunk_list.front())->smallest_;
+void NowChunk(uint64_t start) {
+    int idx =0;
+    for(auto chunk : chunk_list){
+      if(chunk->extentstart_ != start) continue;
+      printf("Current Read Zone#= %d, Extent#= %d ExtentStart=0x%lx\n", chunk->zoneid_, chunk->extentid_, chunk->extentstart_);
+      idx++;
+      printf("Smallest Key of Chunk#=");
+      for(int j=0; j<20; j++){
+        printf("%x", chunk->smallest_[j]);
+      }
+      printf("  ");
+      printf("Largest Key of Chunk#=");
+      for(int j=0; j<20; j++){
+        printf("%x", chunk->largest_[j]);
+      }
+      printf("\n");
+    }
   }
 
-  const char* getLargest() {
-    return (chunk_list.back())->largest_;
+  void ShowChunklist() {
+    int idx =0;
+    for(auto chunk : chunk_list){
+      printf("Show Chunk List of Zone#= %d, Extent#= %d ExtentStart=0x%lx\n", chunk->zoneid_, chunk->extentid_, chunk->extentstart_);
+      idx++;
+      printf("Smallest Key of Chunk#= %d:", idx);
+      for(int j=0; j<20; j++){
+        printf("%x", chunk->smallest_[j]);
+      }
+      printf("  ");
+      printf("Largest Key of Chunk#= %d:", idx);
+      for(int j=0; j<20; j++){
+        printf("%x", chunk->largest_[j]);
+      }
+      printf("\n");
+    }
   }
 
   IOStatus Reset();

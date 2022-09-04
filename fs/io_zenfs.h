@@ -91,7 +91,10 @@ class ZoneFile {
   ZonedBlockDevice* GetZbd() { return zbd_; }
   std::vector<ZoneExtent*> GetExtents() { return extents_; }
   Env::WriteLifeTimeHint GetWriteLifeTimeHint() { return lifetime_; }
-
+  IOStatus PositionedRead(uint64_t offset, size_t n, Slice* result,
+                          char* scratch, bool direct,
+                          char* smallest, char* largest,
+                          int s_len, int l_len);
   IOStatus PositionedRead(uint64_t offset, size_t n, Slice* result,
                           char* scratch, bool direct);
   ZoneExtent* GetExtent(uint64_t file_offset, uint64_t* dev_offset);
@@ -113,6 +116,7 @@ class ZoneFile {
   size_t GetUniqueId(char* id, size_t max_size);
 
   std::vector<std::thread> thread_pool_;
+
  private:
   void ReleaseActiveZone();
   void SetActiveZone(Zone* zone);
