@@ -33,8 +33,12 @@ class ZoneExtent {
   uint64_t start_;
   uint32_t length_;
   Zone* zone_;
+  char* key_smallest_;
+  char* key_largest_;
+  bool isValidkey_;
+  int id_;
 
-  explicit ZoneExtent(uint64_t start, uint32_t length, Zone* zone);
+  explicit ZoneExtent(uint64_t start, uint32_t length, Zone* zone, char* key_smallest, char* key_largest, bool isValidkey, int id);
   Status DecodeFrom(Slice* input);
   void EncodeTo(std::string* output);
   void EncodeJson(std::ostream& json_stream);
@@ -98,7 +102,7 @@ class ZoneFile {
   IOStatus PositionedRead(uint64_t offset, size_t n, Slice* result,
                           char* scratch, bool direct);
   ZoneExtent* GetExtent(uint64_t file_offset, uint64_t* dev_offset);
-  void PushExtent2(size_t wr_size);
+  void PushExtent2(size_t wr_size, char* smallest, char* largest, int s_len, int l_len);
   void PushExtent();
 
   void EncodeTo(std::string* output, uint32_t extent_start);

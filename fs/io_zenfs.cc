@@ -31,14 +31,20 @@
 extern int start_level;
 extern int base_fnum;
 extern bool is_for_compaction;
+extern bool isDataBlock;
 
 namespace ROCKSDB_NAMESPACE {
 
 extern std::shared_ptr<Logger> _logger;
 
 
-ZoneExtent::ZoneExtent(uint64_t start, uint32_t length, Zone* zone)
-    : start_(start), length_(length), zone_(zone) {}
+ZoneExtent::ZoneExtent(uint64_t start, uint32_t length, Zone* zone,
+                       char* key_smallest, char* key_largest, bool isValidkey, int id)
+    : start_(start), length_(length), zone_(zone),
+    key_smallest_(key_smallest),
+    key_largest_(key_largest),
+    isValidkey_(isValidkey),
+    id_(id) {}
 
 Status ZoneExtent::DecodeFrom(Slice* input) {
   if (input->size() != (sizeof(start_) + sizeof(length_)))
@@ -150,7 +156,7 @@ Status ZoneFile::DecodeFrom(Slice* input) {
         lifetime_ = (Env::WriteLifeTimeHint)lt;
         break;
       case kExtent:
-        extent = new ZoneExtent(0, 0, nullptr);
+        extent = new ZoneExtent(0, 0, nullptr, nullptr, nullptr, false, -1);
         GetLengthPrefixedSlice(input, &slice);
         s = extent->DecodeFrom(&slice);
         if (!s.ok()) {
@@ -192,7 +198,7 @@ Status ZoneFile::MergeUpdate(std::shared_ptr<ZoneFile> update) {
     ZoneExtent* extent = update_extents[i];
     Zone* zone = extent->zone_;
     zone->used_capacity_ += extent->length_;
-    extents_.push_back(new ZoneExtent(extent->start_, extent->length_, zone));
+    extents_.push_back(new ZoneExtent(extent->start_, extent->length_, zone, nullptr, nullptr, true, -1));
   }
 
   MetadataSynced();
@@ -234,6 +240,7 @@ void ZoneFile::SetFileModificationTime(time_t mt) { m_time_ = mt; }
 
 ZoneFile::~ZoneFile() {
   for (auto e = std::begin(extents_); e != std::end(extents_); ++e) {
+    if( (*e)->isValidkey_ != false) continue;
     Zone* zone = (*e)->zone_;
     assert(zone && zone->used_capacity_ >= (*e)->length_);
     zone->used_capacity_ -= (*e)->length_;
@@ -276,10 +283,10 @@ bool ZoneFile::IsOpenForWR() { return open_for_wr_; }
 
 ZoneExtent* ZoneFile::GetExtent(uint64_t file_offset, uint64_t* dev_offset) {
   for (unsigned int i = 0; i < extents_.size(); i++) {
-  //printf("GetExtent:: filename = %s, extent_start = 0x%lx, length = %u\n"
-  //      , getFilename().c_str(), extents_[i]->start_, extents_[i]->length_);
-    if (file_offset < extents_[i]->length_) {
-      *dev_offset = extents_[i]->start_ + file_offset;
+   if (file_offset < extents_[i]->length_) {
+      *dev_offset = extents_[i]->start_ + file_offset;  
+      printf("%s GetExtent:: fileoffset=%lu, file_offset=0x%lx, extent_id=%d, extent_start = 0x%lx, length = %u r_off(devoff)=0x%lx\n"
+        , getFilename().c_str(), file_offset, file_offset, extents_[i]->id_, extents_[i]->start_, extents_[i]->length_, extents_[i]->start_+file_offset);
       return extents_[i];
     } else {
       file_offset -= extents_[i]->length_;
@@ -287,6 +294,8 @@ ZoneExtent* ZoneFile::GetExtent(uint64_t file_offset, uint64_t* dev_offset) {
   }
   return NULL;
 }
+
+static int invalidread_extent = -1;
 
 IOStatus ZoneFile::PositionedRead(uint64_t offset, size_t n, Slice* result,
                                   char* scratch, bool direct,
@@ -307,6 +316,7 @@ IOStatus ZoneFile::PositionedRead(uint64_t offset, size_t n, Slice* result,
   IOStatus s;
 
   if (offset >= fileSize) {
+    printf("%s PositionedRead offset is larger than fileSize,  fileSize=%ld, offset=%lu, toreadSize=%ld\n", getFilename().c_str(), GetFileSize(), offset, n);
     *result = Slice(scratch, 0);
     return IOStatus::OK();
   }
@@ -319,29 +329,30 @@ IOStatus ZoneFile::PositionedRead(uint64_t offset, size_t n, Slice* result,
     return s;
   }
 if (is_for_compaction && start_level && smallest!=nullptr && getFilename().substr(getFilename().size() - 3) == "sst") {
-  printf("PositionedRead size n = %d\n ", n);
-  printf("ForCompaction=%d StartLevel=%d BaseSSTFile=%d\n", is_for_compaction, start_level, base_fnum);
-  printf("ZoneNR=%ld Filename=%s l_len=%d\n", extent->zone_->GetZoneNr(), getFilename().c_str(), l_len);
-  for(auto chunk : extent->zone_->chunk_list){
-    if(chunk->extentstart_ != extent->start_) continue;
-    printf("extent_length = %d\n", extent->length_);
-    Slice c_largest = Slice(chunk->largest_, l_len);
-    Slice r_largest = Slice(largest, l_len);
-    if(c_largest.compare(r_largest) >= 0){
-      printf("This Chunk_largest=");
-      for(int i=0; i<l_len; i++){
-        printf("%x", c_largest.data()[i]);
-      }
-      printf("\n");
-      printf("Want Read_largest=");
-      for(int i=0; i<l_len; i++){
-        printf("%x", r_largest.data()[i]);
-      }
-      printf("\nCompare:: %d\n", c_largest.compare(r_largest));
-      printf("chunkExtentStart=0x%lx Valid?=%d\n", chunk->extentstart_, chunk->isValid_);
-      printf("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n");
-      chunk->isValid_ = false;
+  //printf("Try Read ZoneNR=%ld Filename=%s l_len=%d\n", extent->zone_->GetZoneNr(), getFilename().c_str(), l_len);
+  Slice c_smallest = Slice(extent->key_smallest_, l_len);
+  Slice r_largest = Slice(largest, l_len);
+  if(c_smallest.compare(r_largest) > 0){
+    printf("%s [Read] ChunkSmallest is larger than ReadLargest!!  ZoneNR=%ld\n", getFilename().c_str(), extent->zone_->GetZoneNr());
+    if(isDataBlock){
+    printf("Chunk_smallest=(l_len=%d)", l_len);
+    for(int i=0; i<l_len; i++){
+      printf("%x", c_smallest.data()[i]);
     }
+    printf("    ");
+    printf("Read_largest=(l_len=%d)", l_len);
+    for(int i=0; i<l_len; i++){
+      printf("%x", r_largest.data()[i]);
+    }
+    printf("\nCompare:: %d\n", c_smallest.compare(r_largest));
+    printf("file offset=0x%lx FileSize=%ld ", offset, fileSize);
+    printf("extent->start offset=0x%lx extent->id=%d\n", extent->start_, extent->id_);
+  }
+  }else {
+    extent->isValidkey_ = false;
+   printf("[READ] Normal PosRead:: file offset=0x%lx toread=%ld FileSize=%ld ", offset, n, fileSize);
+    printf("extent->start offset=0x%lx extent->id=%d\n", extent->start_, extent->id_);
+ 
   }
 }
   extent_end = extent->start_ + extent->length_;
@@ -354,21 +365,28 @@ if (is_for_compaction && start_level && smallest!=nullptr && getFilename().subst
 
   ptr = scratch;
 
-  while (read != r_sz) {
+  while (read != r_sz && invalidread_extent != extent->id_) {
     size_t pread_sz = r_sz - read;
+      printf("PosRead:: pread_sz=%ld r_sz(tot)=%ld, read=%ld\n", pread_sz, r_sz, read);
 
-    if ((pread_sz + r_off) > extent_end) pread_sz = extent_end - r_off;
+    if ((pread_sz + r_off) > extent_end){
+       pread_sz = extent_end - r_off;
+      printf("PosRead:: read until extent_end:: pread_sz=%ld r_off=0x%lx, extent_end=0x%lx\n", pread_sz, r_off, extent_end);
+    }
 
     /* We may get some unaligned direct reads due to non-aligned extent lengths,
      * so fall back on non-direct-io in that case.
      */
 
     bool aligned = (pread_sz % zbd_->GetBlockSize() == 0);
+    printf("PosRead:: bool aligned=%d pread_sz=%ld\n", aligned, pread_sz);
     if (direct && aligned) {
       r = pread(f_direct, ptr, pread_sz, r_off);
+      printf("Direct read PREADSZ=%ld\n", pread_sz);
       if(r == -1) printf("direct read error in io_zenfs.cc\n");
     } else {
       r = pread(f, ptr, pread_sz, r_off);
+      printf("Undirect read or not aligned PREADSZ=%ld\n", pread_sz);
       if(r == -1) printf("read error in io_zenfs.cc\n");
     }
 
@@ -387,6 +405,35 @@ if (is_for_compaction && start_level && smallest!=nullptr && getFilename().subst
 
     if (read != r_sz && r_off == extent_end) {
       extent = GetExtent(offset + read, &r_off);
+      if (is_for_compaction && start_level && smallest!=nullptr && getFilename().substr(getFilename().size() - 3) == "sst") {
+        //printf("Try2 Read ZoneNR=%ld Filename=%s l_len=%d\n", extent->zone_->GetZoneNr(), getFilename().c_str(), l_len);
+        Slice c_smallest = Slice(extent->key_smallest_, l_len);
+        Slice r_largest = Slice(largest, l_len);
+        if(isDataBlock){
+          if(c_smallest.compare(r_largest) > 0){
+            printf("Next Chunk_smallest=");
+            for(int i=0; i<l_len; i++){
+              printf("%x", c_smallest.data()[i]);
+            }
+            printf("    ");
+            printf("Read_largest=");
+            for(int i=0; i<l_len; i++){
+              printf("%x", r_largest.data()[i]);
+            }
+            printf("\nCompare:: %d\n", c_smallest.compare(r_largest));
+            printf("file offset=0x%lx FileSize=%ld, %ld(MB)  ", offset+read, fileSize, fileSize/1024/1024);
+            printf("extent->start offset=0x%lx, extent->id=%d\n", extent->start_, extent->id_);
+            printf("Left Read Size =%ld, %ld(kB)\n", read, read/1024);
+            //read = r_sz;
+            //printf("[READ] Modified Read Size =%d, %d(kB)\n", read, read/1024);
+            invalidread_extent = extent->id_;
+            printf("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n");
+            break;
+          }
+        }else {
+          extent->isValidkey_ = false;
+        }
+      }
       if (!extent) {
         /* read beyond end of (synced) file data */
         break;
@@ -402,10 +449,16 @@ if (is_for_compaction && start_level && smallest!=nullptr && getFilename().subst
     read = 0;
   }
 
-  if (read == 0) {
+  if (read == 0 && invalidread_extent != extent->id_) {
+    printf("ABORTED::%s, r=%ld, read=%ld, extent->id_=%d, extent->start_off=0x%lx,r_sz=%ld, offset=0x%lx, sizeread_n = %ld, fileSize=%ld ZoneNR=%ld extent->len=%d\n",
+    getFilename().c_str(), r, read, extent->id_, extent->start_, r_sz, offset, n, fileSize,
+    extent->zone_->GetZoneNr(), extent->length_);   
       abort();
   }
   *result = Slice((char*)scratch, read);
+  if(isDataBlock && is_for_compaction && start_level){
+    printf("End of PositionedRead :: result size=%ld\n", result->size());
+  }
   return s;
 }
 
@@ -503,13 +556,13 @@ IOStatus ZoneFile::PositionedRead(uint64_t offset, size_t n, Slice* result,
   return s;
 }
 
-void ZoneFile::PushExtent2(size_t wr_size) {
+void ZoneFile::PushExtent2(size_t wr_size, char* smallest, char* largest, int s_len, int l_len) {
   //printf("PushExtent:: filename = %s, extent_start = 0x%lx, length = %u\n"
   //      , getFilename().c_str(), active_zone_->start_, wr_size);
- 
-  extents_.push_back(new ZoneExtent(active_zone_->wp_, wr_size, active_zone_));
-//  printf("PushExtent extent_start = 0x%lx extent_id=%d zone_id=%d\n", active_zone_->wp_, static_cast<int>(extents_.size()), active_zone_->GetZoneNr());
-  active_zone_->used_capacity_ += wr_size;
+
+  ZoneExtent* extent = new ZoneExtent(active_zone_->wp_, wr_size, active_zone_, nullptr, nullptr, false, -1);
+  extents_.push_back(extent);
+ active_zone_->used_capacity_ += wr_size;
   extent_filepos_ = fileSize;
 }
 
@@ -532,8 +585,7 @@ void ZoneFile::PushExtent() {
   length = fileSize - extent_filepos_;
   if (length == 0) return;
   assert(length <= (active_zone_->wp_ - extent_start_));
-  extents_.push_back(new ZoneExtent(extent_start_, length, active_zone_));
-  /* need to add chunk_info */
+  extents_.push_back(new ZoneExtent(extent_start_, length, active_zone_, nullptr, nullptr, false, -1));
 
   active_zone_->used_capacity_ += length;
   extent_start_ = active_zone_->wp_;
@@ -551,13 +603,14 @@ static void thread_append(Zone *zone, char *data, uint32_t size, IODebugContext*
   Info(_logger, "zone %d thread_append end\n", zone->GetZoneNr());
   zone->zone_lock = 0;
 //  zone->Finish();
-  dbg->buf_->RefitTail(dbg->file_advance_, dbg->leftover_tail_);
-  delete dbg->buf_->Release();
+//  dbg->buf_->RefitTail(dbg->file_advance_, dbg->leftover_tail_);
+//  delete dbg->buf_->Release();
 }
 
 /* Assumes that data and size are block aligned */
 IOStatus ZoneFile::Append(void* data, int data_size, int valid_size, IODebugContext* dbg,
                           char* smallest, char* largest, int s_len, int l_len) {
+  printf("%s ZoneFile::Append data_size=%d\n", getFilename().c_str(), data_size);
   uint32_t left = data_size;
   uint32_t wr_size, offset = 0;
   uint32_t tmp_cap;
@@ -574,7 +627,7 @@ IOStatus ZoneFile::Append(void* data, int data_size, int valid_size, IODebugCont
   while(!get_zone){
     bool left_zone = false;
     auto& atom = static_zone_vec[position]; 
-    if(atom->zone_lock == 0 && atom->capacity_ >= 5*192*1024){ 
+    if(atom->zone_lock == 0 && atom->capacity_ >= 3*192*1024){ 
       zone = atom;
       atom->zone_lock = 1;
       get_zone = 1;
@@ -597,55 +650,33 @@ IOStatus ZoneFile::Append(void* data, int data_size, int valid_size, IODebugCont
   wr_size = left;
   if (wr_size > active_zone_->capacity_) wr_size = active_zone_->capacity_;
 
-  if (getFilename().substr(getFilename().size() - 3) == "sst") {
-    ZoneChunk* chunk = new ZoneChunk(nullptr, nullptr,0,0,0, false);
-#if 0
-    if (!active_zone_->chunk_list.empty()){
-      printf("Smallest Key of ChunklistBack#= ");
-      for(int j=0; j<20; j++){
-        printf("%x", active_zone_->chunk_list.back()->smallest_[j]);
-      }
-      printf("  ");
-      printf("Largest Key of ChunklistBack#=");
-      for(int j=0; j<20; j++){
-        printf("%x", active_zone_->chunk_list.back()->largest_[j]);
-      }
-      printf("\n");
-    }
-#endif
-    chunk->smallest_ = new char[s_len+1];
-    chunk->largest_ = new char[l_len+1];
-    for(int i=0; i<s_len; i++){
-      chunk->smallest_[i] = smallest[i];
-    }
-    for(int i=0; i<l_len; i++){
-      chunk->largest_[i] = largest[i];
-    }
-    chunk->zoneid_ = active_zone_->GetZoneNr();
-    chunk->isValid_ = true;
-
-    active_zone_->PushChunk(chunk); 
-#if 1
-    if (is_for_compaction && start_level) {
-    printf("%s PushedChunk Zone#=%ld\n", getFilename().c_str(), chunk->zoneid_);
-    printf("wr_size = %d SmallestKey=", wr_size);
+  PushExtent2(wr_size, smallest, largest, s_len, l_len);
+  extents_.back()->key_smallest_ = new char[s_len+1];
+  extents_.back()->key_largest_ = new char[l_len+1];
+  for(int i=0; i<s_len; i++){
+    extents_.back()->key_smallest_[i] = smallest[i];
+  }
+  for(int i=0; i<l_len; i++){
+    extents_.back()->key_largest_[i] = largest[i];
+  }
+  extents_.back()->isValidkey_ = true;
+  extents_.back()->id_ = static_cast<int>(extents_.size());
+  if (true) {
+  printf("%s [WRITE] ZoneNr=%d, filesize=%ld  ", getFilename().c_str(), active_zone_->GetZoneNr(), fileSize);
+    printf("Push EXTENT INFO###################\nSmallestKey=");
     for (int i=0; i<s_len; i++){
-      printf("%x", active_zone_->chunk_list.back()->smallest_[i]);
+      printf("%x", extents_.back()->key_smallest_[i]);
     }
     printf("  ");
     printf("LargestKey=");
     for (int i=0; i<l_len; i++){
-      printf("%x", active_zone_->chunk_list.back()->largest_[i]);
+      printf("%x", extents_.back()->key_largest_[i]);
     }
     printf("\n");
-    }
-#endif
-    chunk->extentid_ = static_cast<int>(extents_.size() + 1);
-    chunk->extentstart_= extent_start_;
-  }
-
-  PushExtent2(wr_size);
-
+  printf("extent_start = 0x%lx extent_id=%d wr_size(length)=%d offset=0x%x\n#########################\n", 
+  active_zone_->wp_, extents_.back()->id_, wr_size, offset+wr_size);
+}
+ 
   //  Info(zbd_->logger_, "add write thread filename = %s zone %d", filename_.c_str(), active_zone_->GetZoneNr());
   
   thread_pool_.push_back(std::thread(thread_append, active_zone_, (char*)data + offset, wr_size, dbg));
@@ -654,6 +685,8 @@ IOStatus ZoneFile::Append(void* data, int data_size, int valid_size, IODebugCont
   offset += wr_size;
   
   fileSize -= (data_size - valid_size);
+  printf("DataSize=%ld, ValidSize=%ld, FileSize=%ld\n",
+  data_size, valid_size, fileSize);
   return s;
 }
 
@@ -949,6 +982,7 @@ IOStatus ZonedWritableFile::PositionedAppend(const Slice& data, uint64_t offset,
 
   if (offset != wp) {
     assert(false);
+    printf("offset!=wp offset=0x%lx, wp=0x%lx\n", offset, wp);
     return IOStatus::IOError("positioned append not at write pointer");
   }
 
@@ -958,7 +992,10 @@ IOStatus ZonedWritableFile::PositionedAppend(const Slice& data, uint64_t offset,
     buffer_mtx_.unlock();
   } else {
     s = zoneFile_->Append((void*)data.data(), data.size(), data.size(), dbg, smallest, largest, s_len, l_len);
-    if (s.ok()) wp += data.size();
+    if (s.ok()){
+    printf("[WRITE] ZoneFile Append Finish!!! (offset) wp=0x%lx\n", wp);
+       wp += data.size();
+    }
 //    buffers_.push_back(dbg);
   }
   return s;
