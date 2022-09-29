@@ -39,10 +39,9 @@ extern std::shared_ptr<Logger> _logger;
 
 
 ZoneExtent::ZoneExtent(uint64_t start, uint32_t length, Zone* zone,
-                       char* key_smallest, char* key_largest, bool isValidkey, int id)
+                       char* key_smallest, bool isValidkey, int id)
     : start_(start), length_(length), zone_(zone),
     key_smallest_(key_smallest),
-    key_largest_(key_largest),
     isValidkey_(isValidkey),
     id_(id) {}
 
@@ -156,7 +155,7 @@ Status ZoneFile::DecodeFrom(Slice* input) {
         lifetime_ = (Env::WriteLifeTimeHint)lt;
         break;
       case kExtent:
-        extent = new ZoneExtent(0, 0, nullptr, nullptr, nullptr, false, -1);
+        extent = new ZoneExtent(0, 0, nullptr, nullptr, false, -1);
         GetLengthPrefixedSlice(input, &slice);
         s = extent->DecodeFrom(&slice);
         if (!s.ok()) {
@@ -198,7 +197,7 @@ Status ZoneFile::MergeUpdate(std::shared_ptr<ZoneFile> update) {
     ZoneExtent* extent = update_extents[i];
     Zone* zone = extent->zone_;
     zone->used_capacity_ += extent->length_;
-    extents_.push_back(new ZoneExtent(extent->start_, extent->length_, zone, nullptr, nullptr, true, -1));
+    extents_.push_back(new ZoneExtent(extent->start_, extent->length_, zone, nullptr, false, -1));
   }
 
   MetadataSynced();
@@ -240,11 +239,13 @@ void ZoneFile::SetFileModificationTime(time_t mt) { m_time_ = mt; }
 
 ZoneFile::~ZoneFile() {
   for (auto e = std::begin(extents_); e != std::end(extents_); ++e) {
-    if( (*e)->isValidkey_ != false) continue;
+    printf("FUCK ZoneFile %s\n", GetFilename().c_str());
     Zone* zone = (*e)->zone_;
     assert(zone && zone->used_capacity_ >= (*e)->length_);
     zone->used_capacity_ -= (*e)->length_;
+    printf("FUCK *e->zone=%ld\n", zone->GetZoneNr());
     delete *e;
+
 //    zone->Reset(); 
   }
   static_zone_vec.clear();
@@ -285,8 +286,6 @@ ZoneExtent* ZoneFile::GetExtent(uint64_t file_offset, uint64_t* dev_offset) {
   for (unsigned int i = 0; i < extents_.size(); i++) {
    if (file_offset < extents_[i]->length_) {
       *dev_offset = extents_[i]->start_ + file_offset;  
-      printf("%s GetExtent:: fileoffset=%lu, file_offset=0x%lx, extent_id=%d, extent_start = 0x%lx, length = %u r_off(devoff)=0x%lx\n"
-        , getFilename().c_str(), file_offset, file_offset, extents_[i]->id_, extents_[i]->start_, extents_[i]->length_, extents_[i]->start_+file_offset);
       return extents_[i];
     } else {
       file_offset -= extents_[i]->length_;
@@ -316,7 +315,6 @@ IOStatus ZoneFile::PositionedRead(uint64_t offset, size_t n, Slice* result,
   IOStatus s;
 
   if (offset >= fileSize) {
-    printf("%s PositionedRead offset is larger than fileSize,  fileSize=%ld, offset=%lu, toreadSize=%ld\n", getFilename().c_str(), GetFileSize(), offset, n);
     *result = Slice(scratch, 0);
     return IOStatus::OK();
   }
@@ -367,11 +365,9 @@ if (is_for_compaction && start_level && smallest!=nullptr && getFilename().subst
 
   while (read != r_sz && invalidread_extent != extent->id_) {
     size_t pread_sz = r_sz - read;
-      printf("PosRead:: pread_sz=%ld r_sz(tot)=%ld, read=%ld\n", pread_sz, r_sz, read);
 
     if ((pread_sz + r_off) > extent_end){
        pread_sz = extent_end - r_off;
-      printf("PosRead:: read until extent_end:: pread_sz=%ld r_off=0x%lx, extent_end=0x%lx\n", pread_sz, r_off, extent_end);
     }
 
     /* We may get some unaligned direct reads due to non-aligned extent lengths,
@@ -379,14 +375,11 @@ if (is_for_compaction && start_level && smallest!=nullptr && getFilename().subst
      */
 
     bool aligned = (pread_sz % zbd_->GetBlockSize() == 0);
-    printf("PosRead:: bool aligned=%d pread_sz=%ld\n", aligned, pread_sz);
     if (direct && aligned) {
       r = pread(f_direct, ptr, pread_sz, r_off);
-      printf("Direct read PREADSZ=%ld\n", pread_sz);
       if(r == -1) printf("direct read error in io_zenfs.cc\n");
     } else {
       r = pread(f, ptr, pread_sz, r_off);
-      printf("Undirect read or not aligned PREADSZ=%ld\n", pread_sz);
       if(r == -1) printf("read error in io_zenfs.cc\n");
     }
 
@@ -450,14 +443,10 @@ if (is_for_compaction && start_level && smallest!=nullptr && getFilename().subst
   }
 
   if (read == 0 && invalidread_extent != extent->id_) {
-    printf("ABORTED::%s, r=%ld, read=%ld, extent->id_=%d, extent->start_off=0x%lx,r_sz=%ld, offset=0x%lx, sizeread_n = %ld, fileSize=%ld ZoneNR=%ld extent->len=%d\n",
-    getFilename().c_str(), r, read, extent->id_, extent->start_, r_sz, offset, n, fileSize,
-    extent->zone_->GetZoneNr(), extent->length_);   
       abort();
   }
   *result = Slice((char*)scratch, read);
   if(isDataBlock && is_for_compaction && start_level){
-    printf("End of PositionedRead :: result size=%ld\n", result->size());
   }
   return s;
 }
@@ -556,11 +545,11 @@ IOStatus ZoneFile::PositionedRead(uint64_t offset, size_t n, Slice* result,
   return s;
 }
 
-void ZoneFile::PushExtent2(size_t wr_size, char* smallest, char* largest, int s_len, int l_len) {
+void ZoneFile::PushExtent2(size_t wr_size, char* smallest, int s_len) {
   //printf("PushExtent:: filename = %s, extent_start = 0x%lx, length = %u\n"
   //      , getFilename().c_str(), active_zone_->start_, wr_size);
 
-  ZoneExtent* extent = new ZoneExtent(active_zone_->wp_, wr_size, active_zone_, nullptr, nullptr, false, -1);
+  ZoneExtent* extent = new ZoneExtent(active_zone_->wp_, wr_size, active_zone_, nullptr, false, -1);
   extents_.push_back(extent);
  active_zone_->used_capacity_ += wr_size;
   extent_filepos_ = fileSize;
@@ -585,7 +574,7 @@ void ZoneFile::PushExtent() {
   length = fileSize - extent_filepos_;
   if (length == 0) return;
   assert(length <= (active_zone_->wp_ - extent_start_));
-  extents_.push_back(new ZoneExtent(extent_start_, length, active_zone_, nullptr, nullptr, false, -1));
+  extents_.push_back(new ZoneExtent(extent_start_, length, active_zone_, nullptr, false, -1));
 
   active_zone_->used_capacity_ += length;
   extent_start_ = active_zone_->wp_;
@@ -609,8 +598,7 @@ static void thread_append(Zone *zone, char *data, uint32_t size, IODebugContext*
 
 /* Assumes that data and size are block aligned */
 IOStatus ZoneFile::Append(void* data, int data_size, int valid_size, IODebugContext* dbg,
-                          char* smallest, char* largest, int s_len, int l_len) {
-  printf("%s ZoneFile::Append data_size=%d\n", getFilename().c_str(), data_size);
+                          char* smallest, int s_len) {
   uint32_t left = data_size;
   uint32_t wr_size, offset = 0;
   uint32_t tmp_cap;
@@ -650,27 +638,19 @@ IOStatus ZoneFile::Append(void* data, int data_size, int valid_size, IODebugCont
   wr_size = left;
   if (wr_size > active_zone_->capacity_) wr_size = active_zone_->capacity_;
 
-  PushExtent2(wr_size, smallest, largest, s_len, l_len);
+  PushExtent2(wr_size, smallest, s_len);
   extents_.back()->key_smallest_ = new char[s_len+1];
-  extents_.back()->key_largest_ = new char[l_len+1];
   for(int i=0; i<s_len; i++){
     extents_.back()->key_smallest_[i] = smallest[i];
   }
-  for(int i=0; i<l_len; i++){
-    extents_.back()->key_largest_[i] = largest[i];
-  }
-  extents_.back()->isValidkey_ = true;
-  extents_.back()->id_ = static_cast<int>(extents_.size());
+  setExtentKeyvalid();
+  setExtentID();
+
   if (true) {
   printf("%s [WRITE] ZoneNr=%d, filesize=%ld  ", getFilename().c_str(), active_zone_->GetZoneNr(), fileSize);
     printf("Push EXTENT INFO###################\nSmallestKey=");
     for (int i=0; i<s_len; i++){
       printf("%x", extents_.back()->key_smallest_[i]);
-    }
-    printf("  ");
-    printf("LargestKey=");
-    for (int i=0; i<l_len; i++){
-      printf("%x", extents_.back()->key_largest_[i]);
     }
     printf("\n");
   printf("extent_start = 0x%lx extent_id=%d wr_size(length)=%d offset=0x%x\n#########################\n", 
@@ -685,8 +665,6 @@ IOStatus ZoneFile::Append(void* data, int data_size, int valid_size, IODebugCont
   offset += wr_size;
   
   fileSize -= (data_size - valid_size);
-  printf("DataSize=%ld, ValidSize=%ld, FileSize=%ld\n",
-  data_size, valid_size, fileSize);
   return s;
 }
 
@@ -846,6 +824,7 @@ IOStatus ZonedWritableFile::Fsync(const IOOptions& /*options*/,
     return s;
   }
   zoneFile_->PushExtent();
+
   return metadata_writer_->Persist(zoneFile_);
 }
 
@@ -982,7 +961,6 @@ IOStatus ZonedWritableFile::PositionedAppend(const Slice& data, uint64_t offset,
 
   if (offset != wp) {
     assert(false);
-    printf("offset!=wp offset=0x%lx, wp=0x%lx\n", offset, wp);
     return IOStatus::IOError("positioned append not at write pointer");
   }
 
@@ -991,9 +969,8 @@ IOStatus ZonedWritableFile::PositionedAppend(const Slice& data, uint64_t offset,
     s = BufferedWrite(data);
     buffer_mtx_.unlock();
   } else {
-    s = zoneFile_->Append((void*)data.data(), data.size(), data.size(), dbg, smallest, largest, s_len, l_len);
+    s = zoneFile_->Append((void*)data.data(), data.size(), data.size(), dbg, smallest, s_len);
     if (s.ok()){
-    printf("[WRITE] ZoneFile Append Finish!!! (offset) wp=0x%lx\n", wp);
        wp += data.size();
     }
 //    buffers_.push_back(dbg);

@@ -34,11 +34,10 @@ class ZoneExtent {
   uint32_t length_;
   Zone* zone_;
   char* key_smallest_;
-  char* key_largest_;
   bool isValidkey_;
   int id_;
 
-  explicit ZoneExtent(uint64_t start, uint32_t length, Zone* zone, char* key_smallest, char* key_largest, bool isValidkey, int id);
+  explicit ZoneExtent(uint64_t start, uint32_t length, Zone* zone, char* key_smallest, bool isValidkey, int id);
   Status DecodeFrom(Slice* input);
   void EncodeTo(std::string* output);
   void EncodeJson(std::ostream& json_stream);
@@ -72,6 +71,14 @@ class ZoneFile {
     return filename_;
   };
 
+  void setExtentKeyvalid() {
+    extents_.back()->isValidkey_ = true;
+  }
+
+  void setExtentID() {
+    extents_.back()->id_ = static_cast<int>(extents_.size());
+  }
+
   explicit ZoneFile(ZonedBlockDevice* zbd, std::string filename,
                     uint64_t file_id_);
 
@@ -81,7 +88,7 @@ class ZoneFile {
   IOStatus CloseWR();
   bool IsOpenForWR();
   IOStatus Append(void* data, int data_size, int valid_size, IODebugContext* dbg,
-                  char* smallest, char* largest, int s_len, int l_len);
+                  char* smallest, int s_len);
   IOStatus Append(void* data, int data_size, int valid_size);
   IOStatus SetWriteLifeTimeHint(Env::WriteLifeTimeHint lifetime);
   std::string GetFilename();
@@ -102,7 +109,7 @@ class ZoneFile {
   IOStatus PositionedRead(uint64_t offset, size_t n, Slice* result,
                           char* scratch, bool direct);
   ZoneExtent* GetExtent(uint64_t file_offset, uint64_t* dev_offset);
-  void PushExtent2(size_t wr_size, char* smallest, char* largest, int s_len, int l_len);
+  void PushExtent2(size_t wr_size, char* smallest, int s_len);
   void PushExtent();
 
   void EncodeTo(std::string* output, uint32_t extent_start);
@@ -161,7 +168,7 @@ class ZonedWritableFile : public FSWritableFile {
 
   virtual IOStatus PositionedAppend(
       const Slice& data, uint64_t offset, const IOOptions& opts,
-      char* smallest, char* largest, int s_len, int l_len, /* key range_info */
+      char* smallest, int s_len, /* key range_info */
       IODebugContext* dbg) override {
     return PositionedAppend(data, offset, opts, dbg);
   }

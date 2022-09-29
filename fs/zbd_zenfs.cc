@@ -196,7 +196,6 @@ IOStatus Zone::Append(char *data, uint32_t size) {
     if(left<unit){
       void *pad;
 
-      printf("left=%d, unit-left(toPad)=%d\n", left, unit-left);
       posix_memalign(&pad, sysconf(_SC_PAGESIZE), 192*1024);
       memcpy(pad, ptr, left);
       ret = pwrite(fd, pad, unit, wp_);
