@@ -237,15 +237,21 @@ uint64_t ZoneFile::GetFileSize() { return fileSize; }
 void ZoneFile::SetFileSize(uint64_t sz) { fileSize = sz; }
 void ZoneFile::SetFileModificationTime(time_t mt) { m_time_ = mt; }
 
+/*ZoneExtent::~ZoneExtent(){
+  printf("FUCK Extent Zonenr=%ld\n", zone_->GetZoneNr());
+  delete key_smallest_;
+  key_smallest_ = nullptr;
+}
+*/
+
 ZoneFile::~ZoneFile() {
   for (auto e = std::begin(extents_); e != std::end(extents_); ++e) {
     printf("FUCK ZoneFile %s\n", GetFilename().c_str());
     Zone* zone = (*e)->zone_;
     assert(zone && zone->used_capacity_ >= (*e)->length_);
     zone->used_capacity_ -= (*e)->length_;
-    printf("FUCK *e->zone=%ld\n", zone->GetZoneNr());
+    delete (*e)->key_smallest_;
     delete *e;
-
 //    zone->Reset(); 
   }
   static_zone_vec.clear();

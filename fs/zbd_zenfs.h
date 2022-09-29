@@ -27,7 +27,7 @@
 #include "rocksdb/env.h"
 #include "rocksdb/io_status.h"
 #include "rocksdb/slice.h"
-#include "/home/hwshin/exp_hynix/rocksdb/util/aligned_buffer.h"
+#include "util/aligned_buffer.h"
 
 
 namespace ROCKSDB_NAMESPACE {

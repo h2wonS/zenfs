@@ -38,6 +38,7 @@ class ZoneExtent {
   int id_;
 
   explicit ZoneExtent(uint64_t start, uint32_t length, Zone* zone, char* key_smallest, bool isValidkey, int id);
+
   Status DecodeFrom(Slice* input);
   void EncodeTo(std::string* output);
   void EncodeJson(std::ostream& json_stream);
