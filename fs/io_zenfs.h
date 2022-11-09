@@ -104,10 +104,6 @@ class ZoneFile {
   std::vector<ZoneExtent*> GetExtents() { return extents_; }
   Env::WriteLifeTimeHint GetWriteLifeTimeHint() { return lifetime_; }
   IOStatus PositionedRead(uint64_t offset, size_t n, Slice* result,
-                          char* scratch, bool direct,
-                          char* smallest, char* largest,
-                          int s_len, int l_len);
-  IOStatus PositionedRead(uint64_t offset, size_t n, Slice* result,
                           char* scratch, bool direct);
   ZoneExtent* GetExtent(uint64_t file_offset, uint64_t* dev_offset);
   void PushExtent2(size_t wr_size, char* smallest, int s_len);

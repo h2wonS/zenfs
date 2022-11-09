@@ -32,6 +32,9 @@ extern int start_level;
 extern int base_fnum;
 extern bool is_for_compaction;
 extern bool isDataBlock;
+extern char* comp_smallest;
+extern char* comp_largest;
+
 
 namespace ROCKSDB_NAMESPACE {
 
@@ -240,6 +243,7 @@ void ZoneFile::SetFileModificationTime(time_t mt) { m_time_ = mt; }
 ZoneFile::~ZoneFile() {
   for (auto e = std::begin(extents_); e != std::end(extents_); ++e) {
     if((*e)->isValidkey_ != false){
+      //printf("The extent(%d) Key is Still Valid(%d) So Stop delete %s\n", (*e)->id_, (*e)->isValidkey_, filename_.c_str());
       break;
     }
     Zone* zone = (*e)->zone_;
@@ -254,6 +258,7 @@ ZoneFile::~ZoneFile() {
   if (!s.ok()) {
     zbd_->SetZoneDeferredStatus(s);
   }
+  //printf("Deleted File %s\n", filename_.c_str());
 
 }
 
@@ -295,183 +300,6 @@ ZoneExtent* ZoneFile::GetExtent(uint64_t file_offset, uint64_t* dev_offset) {
   return NULL;
 }
 
-static int invalidread_extent = -1;
-
-IOStatus ZoneFile::PositionedRead(uint64_t offset, size_t n, Slice* result,
-                                  char* scratch, bool direct,
-                                  char* smallest, char* largest, int s_len, int l_len) {
-  ZenFSMetricsLatencyGuard guard(zbd_->GetMetrics(), ZENFS_READ_LATENCY,
-                                 Env::Default());
-  zbd_->GetMetrics()->ReportQPS(ZENFS_READ_QPS, 1);
-
-  int f = zbd_->GetReadFD();
-  int f_direct = zbd_->GetReadDirectFD();
-  char* ptr;
-  uint64_t r_off;
-  size_t r_sz;
-  ssize_t r = 0;
-  size_t read = 0;
-  ZoneExtent* extent;
-  uint64_t extent_end;
-  IOStatus s;
-
-  if (offset >= fileSize) {
-    *result = Slice(scratch, 0);
-    return IOStatus::OK();
-  }
-
-  r_off = 0;
-  extent = GetExtent(offset, &r_off);
-  if (!extent) {
-    /* read start beyond end of (synced) file data*/
-    *result = Slice(scratch, 0);
-    return s;
-  }
-if (is_for_compaction && start_level && smallest!=nullptr && getFilename().substr(getFilename().size() - 3) == "sst") {
-  Slice c_smallest = Slice(extent->key_smallest_, l_len);
-  Slice r_largest = Slice(largest, l_len);
-  if(c_smallest.compare(r_largest) > 0){
-    printf("%s Fuck Shit!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! Comp is larger than ToReadKey\n", filename_.c_str());
-#if 1
-Info(_logger, "Compare Shit fileOffset=0x%lx FileSize=%ld extent->start offset=0x%lx extent->id=%d", offset, fileSize, extent->start_, extent->id_);
-    printf("%s [Read] ChunkSmallest is larger than ReadLargest!!  ZoneNR=%ld\n", getFilename().c_str(), extent->zone_->GetZoneNr());
-    if(isDataBlock){
-    printf("Chunk_smallest=(l_len=%d)", l_len);
-    for(int i=0; i<l_len; i++){
-      printf("%x", c_smallest.data()[i]);
-    }
-    printf("    ");
-    printf("Read_largest=(l_len=%d)", l_len);
-    for(int i=0; i<l_len; i++){
-      printf("%x", r_largest.data()[i]);
-    }
-    printf("\nCompare:: %d\n", c_smallest.compare(r_largest));
-    printf("file offset=0x%lx FileSize=%ld ", offset, fileSize);
-    printf("extent->start offset=0x%lx extent->id=%d\n", extent->start_, extent->id_);
-  }
-#endif
-
-  *result = Slice((char*)scratch, read);
-  return s;
-
-  }else {
-    extent->isValidkey_ = false;
-   printf("[READ] Normal PosRead:: file offset=0x%lx toread=%ld FileSize=%ld ", offset, n, fileSize);
-    printf("extent->start offset=0x%lx extent->id=%d\n", extent->start_, extent->id_);
- 
-Info(_logger, "PositionedRead fileOffset=0x%lx FileSize=%ld Toread=%ld extent->start offset=0x%lx extent->id=%d", offset, fileSize, n, extent->start_, extent->id_);
-  }
-}
-  extent_end = extent->start_ + extent->length_;
-
-  /* Limit read size to end of file */
-  if ((offset + n) > fileSize)
-    r_sz = fileSize - offset;
-  else
-    r_sz = n;
-
-  ptr = scratch;
-
-  while (read != r_sz && invalidread_extent != extent->id_) {
-    size_t pread_sz = r_sz - read;
-
-    if ((pread_sz + r_off) > extent_end){
-       pread_sz = extent_end - r_off;
-    }
-
-    /* We may get some unaligned direct reads due to non-aligned extent lengths,
-     * so fall back on non-direct-io in that case.
-     */
-
-    bool aligned = (pread_sz % zbd_->GetBlockSize() == 0);
-    if (direct && aligned) {
-      r = pread(f_direct, ptr, pread_sz, r_off);
-      if(r == -1) printf("direct read error in io_zenfs.cc\n");
-    } else {
-      r = pread(f, ptr, pread_sz, r_off);
-      if(r == -1) printf("read error in io_zenfs.cc\n");
-    }
-
-    if (r <= 0) {
-      if (r == -1 && errno == EINTR) {
-        continue;
-      }
-      break;
-    }
-
-    pread_sz = (size_t)r;
-
-    ptr += pread_sz;
-    read += pread_sz;
-    r_off += pread_sz;
-
-    Info(_logger, "PositionedRead extentId=%ld, read=%ld, fileSize=%ld, fileOffset=0x%lx", 
-    extent->id_, read, fileSize, offset);
-
-    if (read != r_sz && r_off == extent_end) {
-      extent = GetExtent(offset + read, &r_off);
-      if (is_for_compaction && start_level && smallest!=nullptr && getFilename().substr(getFilename().size() - 3) == "sst") {
-            //printf("Try2 Read ZoneNR=%ld Filename=%s l_len=%d\n", extent->zone_->GetZoneNr(), getFilename().c_str(), l_len);
-        Slice c_smallest = Slice(extent->key_smallest_, l_len);
-        Slice r_largest = Slice(largest, l_len);
-
-        if(isDataBlock){
-          if(c_smallest.compare(r_largest) > 0){
-Info(_logger, "Next Compare Shit fileOffset=0x%lx FileSize=%ld extent->start offset=0x%lx extent->id=%d", offset, fileSize, extent->start_, extent->id_);
-            printf("Next Chunk_smallest=");
-            for(int i=0; i<l_len; i++){
-              printf("%x", c_smallest.data()[i]);
-            }
-            printf("    ");
-            printf("Read_largest=");
-            for(int i=0; i<l_len; i++){
-              printf("%x", r_largest.data()[i]);
-            }
-            printf("\nCompare:: %d\n", c_smallest.compare(r_largest));
-            printf("file offset=0x%lx FileSize=%ld, %ld(MB)  ", offset+read, fileSize, fileSize/1024/1024);
-            printf("extent->start offset=0x%lx, extent->id=%d\n", extent->start_, extent->id_);
-            printf("Left Read Size =%ld, %ld(kB)\n", read, read/1024);
-            //read = r_sz;
-            //printf("[READ] Modified Read Size =%d, %d(kB)\n", read, read/1024);
-            invalidread_extent = extent->id_;
-            printf("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n");
-            break;
-          }
-        }else {
-          extent->isValidkey_ = false;
-        }
-      }
-      if (!extent) {
-        /* read beyond end of (synced) file data */
-        break;
-      }
-      r_off = extent->start_;
-      extent_end = extent->start_ + extent->length_;
-      assert(((size_t)r_off % zbd_->GetBlockSize()) == 0);
-    }
-  }
-
-  if (r < 0) {
-    s = IOStatus::IOError("pread error\n");
-    read = 0;
-  }
-
-  if (read == 0 && invalidread_extent != extent->id_) {
-      abort();
-  }
-
-
-Info(_logger, "PositionedRead result_read_size=%d", read);
-  *result = Slice((char*)scratch, read);
-  if(is_for_compaction){
-    if (read != n){
-      printf("\t\t\t FUCK:: %s read=%ld\n", filename_.c_str(),  read);
-    }
-    assert(read==n);
-  }
-  return s;
-}
-
 IOStatus ZoneFile::PositionedRead(uint64_t offset, size_t n, Slice* result,
                                   char* scratch, bool direct) {
 
@@ -502,6 +330,50 @@ IOStatus ZoneFile::PositionedRead(uint64_t offset, size_t n, Slice* result,
     *result = Slice(scratch, 0);
     return s;
   }
+  if (is_for_compaction && comp_smallest!=nullptr && comp_largest!=nullptr && getFilename().substr(getFilename().size() - 3) == "sst") {
+    if (start_level){
+      Slice c_smallest = Slice(extent->key_smallest_, 20);
+      Slice r_largest = Slice(comp_largest, 20);
+      if(c_smallest.compare(r_largest) > 0){
+        Info(_logger, "[Cut!] Compare Shit fileOffset=0x%lx FileSize=%ld extent->start offset=0x%lx extent->id=%d result_size would be %d bytes", offset, fileSize, extent->start_, extent->id_, read);
+        //printf("Compare Shit fileOffset=0x%lx FileSize=%ld extent->start offset=0x%lx extent->id=%d... result size would be %d bytes\n", offset, fileSize, extent->start_, extent->id_, read);
+#if 1 
+        printf("%s [Read] ChunkSmallest is larger than ReadLargest!!  ZoneNR=%ld\n", getFilename().c_str(), extent->zone_->GetZoneNr());
+        if(isDataBlock){  
+          printf("Chunk_smallest=");
+          for(int i=0; i<20; i++){
+            printf("%x ", c_smallest.data()[i]);
+          }
+          printf("    ");
+          printf("Read_largest=");
+          for(int i=0; i<20; i++){
+            printf("%x ", r_largest.data()[i]);
+          }
+          printf("\nCompare:: %d\n", c_smallest.compare(r_largest));
+        }
+#endif
+
+        *result = Slice((char*)scratch, read);
+        return s;
+
+      }
+      else {
+        extent->isValidkey_ = false;
+        //   printf("[READ] Normal PosRead:: file offset=0x%lx toread=%ld FileSize=%ld ", offset, n, fileSize);
+        //    printf("extent->start offset=0x%lx extent->id=%d\n", extent->start_, extent->id_);
+
+        Info(_logger, "%s [normal] PositionedRead fileOffset=0x%lx FileSize=%ld Toread=%ld extent->start offset=0x%lx extent->id=%d(%d)", getFilename().c_str(), offset, fileSize, n, extent->start_, extent->id_, extent->isValidkey_);
+      }
+    }
+    else {
+      extent->isValidkey_ = false;
+      //   printf("[READ] Normal PosRead:: file offset=0x%lx toread=%ld FileSize=%ld ", offset, n, fileSize);
+      //    printf("extent->start offset=0x%lx extent->id=%d\n", extent->start_, extent->id_);
+
+      Info(_logger, "%s [normal] PositionedRead fileOffset=0x%lx FileSize=%ld Toread=%ld extent->start offset=0x%lx extent->id=%d(%d)", getFilename().c_str(), offset, fileSize, n, extent->start_, extent->id_, extent->isValidkey_);
+    }
+  }
+
   extent_end = extent->start_ + extent->length_;
 
   /* Limit read size to end of file */
@@ -542,8 +414,29 @@ IOStatus ZoneFile::PositionedRead(uint64_t offset, size_t n, Slice* result,
     read += pread_sz;
     r_off += pread_sz;
 
+    extent->isValidkey_ = false;
+    Info(_logger, "%s PositionedRead extentId=%ld(%d), read=%ld, fileSize=%ld, fileOffset=0x%lx",
+        getFilename().c_str(), 
+        extent->id_, extent->isValidkey_, read, fileSize, offset);
+
+
     if (read != r_sz && r_off == extent_end) {
       extent = GetExtent(offset + read, &r_off);
+
+      if (is_for_compaction && start_level && comp_smallest != nullptr && comp_largest != nullptr && getFilename().substr(getFilename().size() - 3) == "sst") {
+        Slice c_smallest = Slice(extent->key_smallest_, 20);
+        Slice r_largest = Slice(comp_largest, 20);
+
+        if(isDataBlock && start_level){
+          if(c_smallest.compare(r_largest) > 0){
+            Info(_logger, "Next Compare Shit fileOffset=0x%lx FileSize=%ld extent->start offset=0x%lx extent->id=%d", offset, fileSize, extent->start_, extent->id_);
+          }
+          //else {
+            extent->isValidkey_ = false;
+          //}
+        }
+      }
+
       if (!extent) {
         /* read beyond end of (synced) file data */
         break;
@@ -567,9 +460,6 @@ IOStatus ZoneFile::PositionedRead(uint64_t offset, size_t n, Slice* result,
 }
 
 void ZoneFile::PushExtent2(size_t wr_size, char* smallest, int s_len) {
-  //printf("PushExtent:: filename = %s, extent_start = 0x%lx, length = %u\n"
-  //      , getFilename().c_str(), active_zone_->start_, wr_size);
-
   ZoneExtent* extent = new ZoneExtent(active_zone_->wp_, wr_size, active_zone_, nullptr, false, -1);
   extents_.push_back(extent);
  active_zone_->used_capacity_ += wr_size;
@@ -604,30 +494,22 @@ void ZoneFile::PushExtent() {
 
 static void thread_append(Zone *zone, char *data, uint32_t size, IODebugContext* dbg){
   
-  Info(_logger, "zone %d thread_append start\n", zone->GetZoneNr());
+  Info(_logger, "zone %d thread_append start size=%d\n", zone->GetZoneNr(), size);
   IOStatus s = zone->Append(data, size);
   if(!s.ok()) {
     printf("write error\n");
-    assert(false);
   }
   Info(_logger, "zone %d thread_append end\n", zone->GetZoneNr());
   zone->zone_lock = 0;
   //  zone->Finish();
   if(is_for_compaction){
-    printf("dbg->buf_ CURSIZE=%ld. dbg->file_advance=%ld, dbg->leftoverTail=%ld, dbg->buf_=0x%lx\n",
-        dbg->buf_->CurrentSize(), dbg->file_advance_, dbg->leftover_tail_, dbg->buf_);
     Info(_logger, "dbg->buf_ CURSIZE=%ld. dbg->file_advance=%ld, dbg->leftoverTail=%ld, dbg->buf_=0x%lx", dbg->buf_->CurrentSize(), dbg->file_advance_, dbg->leftover_tail_, dbg->buf_);
-
   }
   dbg->buf_->RefitTail(dbg->file_advance_, dbg->leftover_tail_);
   char* ptr = dbg->buf_->Release();
   if(is_for_compaction){
-    printf("After RefitTail dbg->buf_ CURSIZE=%ld. dbg->file_advance=%ld, dbg->leftoverTail=%ld ptr=0x%lx, dbg->buf_=0x%lx\n",
-        dbg->buf_->CurrentSize(), dbg->file_advance_, dbg->leftover_tail_, ptr, dbg->buf_);
-
     Info(_logger, "After RefitTail dbg->buf_ CURSIZE=%ld. dbg->file_advance=%ld, dbg->leftoverTail=%ld, dbg->buf_=0x%lx", dbg->buf_->CurrentSize(), dbg->file_advance_, dbg->leftover_tail_, dbg->buf_);
   }
-  assert(ptr != nullptr);
   delete ptr;
 }
 
@@ -681,16 +563,18 @@ IOStatus ZoneFile::Append(void* data, int data_size, int valid_size, IODebugCont
   setExtentKeyvalid();
   setExtentID();
 
-  if (is_for_compaction) {
-  printf("%s [WRITE] ZoneNr=%d, filesize=%ld  ", getFilename().c_str(), active_zone_->GetZoneNr(), fileSize);
+#if 0
+  if (is_for_compaction && start_level) {
+    printf("%s [WRITE] ZoneNr=%d, filesize=%ld  ", getFilename().c_str(), active_zone_->GetZoneNr(), fileSize);
     printf("Push EXTENT INFO###################\nSmallestKey=");
     for (int i=0; i<s_len; i++){
-      printf("%x", extents_.back()->key_smallest_[i]);
+      printf("%x ", extents_.back()->key_smallest_[i]);
     }
     printf("\n");
   printf("extent_start = 0x%lx extent_id=%d wr_size(length)=%d offset=0x%x\n#########################\n", 
   active_zone_->wp_, extents_.back()->id_, wr_size, offset+wr_size);
 }
+#endif
  
     Info(zbd_->logger_, "add write thread filename = %s zone %d extent_id %d length %d", filename_.c_str(), active_zone_->GetZoneNr(), extents_.back()->id_, wr_size);
   
@@ -1046,7 +930,7 @@ IOStatus ZonedRandomAccessFile::Read(uint64_t offset, size_t n,
                                      const IOOptions& /*options*/,
                                      Slice* result, char* scratch,
                                      IODebugContext* /*dbg*/) const {
-#if 1
+#if 0
           if(zoneFile_->GetFilename().substr(zoneFile_->GetFilename().size() - 3) == "sst") {
             return zoneFile_->PositionedRead(offset, n, result, scratch, direct_, smallest, largest, s_len, l_len);
           }
