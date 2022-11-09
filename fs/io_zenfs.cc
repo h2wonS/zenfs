@@ -327,11 +327,12 @@ IOStatus ZoneFile::PositionedRead(uint64_t offset, size_t n, Slice* result,
     *result = Slice(scratch, 0);
     return s;
   }
+
 if (is_for_compaction && start_level && smallest!=nullptr && getFilename().substr(getFilename().size() - 3) == "sst") {
   Slice c_smallest = Slice(extent->key_smallest_, l_len);
   Slice r_largest = Slice(largest, l_len);
+ 
   if(c_smallest.compare(r_largest) > 0){
-    printf("%s Fuck Shit!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! Comp is larger than ToReadKey\n", filename_.c_str());
 #if 1
 Info(_logger, "Compare Shit fileOffset=0x%lx FileSize=%ld extent->start offset=0x%lx extent->id=%d", offset, fileSize, extent->start_, extent->id_);
     printf("%s [Read] ChunkSmallest is larger than ReadLargest!!  ZoneNR=%ld\n", getFilename().c_str(), extent->zone_->GetZoneNr());
@@ -356,10 +357,10 @@ Info(_logger, "Compare Shit fileOffset=0x%lx FileSize=%ld extent->start offset=0
 
   }else {
     extent->isValidkey_ = false;
-   printf("[READ] Normal PosRead:: file offset=0x%lx toread=%ld FileSize=%ld ", offset, n, fileSize);
-    printf("extent->start offset=0x%lx extent->id=%d\n", extent->start_, extent->id_);
+//   printf("[READ] Normal PosRead:: file offset=0x%lx toread=%ld FileSize=%ld ", offset, n, fileSize);
+//    printf("extent->start offset=0x%lx extent->id=%d\n", extent->start_, extent->id_);
  
-Info(_logger, "PositionedRead fileOffset=0x%lx FileSize=%ld Toread=%ld extent->start offset=0x%lx extent->id=%d", offset, fileSize, n, extent->start_, extent->id_);
+//Info(_logger, "PositionedRead fileOffset=0x%lx FileSize=%ld Toread=%ld extent->start offset=0x%lx extent->id=%d", offset, fileSize, n, extent->start_, extent->id_);
   }
 }
   extent_end = extent->start_ + extent->length_;
@@ -460,16 +461,8 @@ Info(_logger, "Next Compare Shit fileOffset=0x%lx FileSize=%ld extent->start off
       abort();
   }
 
-
-Info(_logger, "PositionedRead result_read_size=%d", read);
   *result = Slice((char*)scratch, read);
-  if(is_for_compaction){
-    if (read != n){
-      printf("\t\t\t FUCK:: %s read=%ld\n", filename_.c_str(),  read);
-    }
-    assert(read==n);
-  }
-  return s;
+   return s;
 }
 
 IOStatus ZoneFile::PositionedRead(uint64_t offset, size_t n, Slice* result,
@@ -613,20 +606,9 @@ static void thread_append(Zone *zone, char *data, uint32_t size, IODebugContext*
   Info(_logger, "zone %d thread_append end\n", zone->GetZoneNr());
   zone->zone_lock = 0;
   //  zone->Finish();
-  if(is_for_compaction){
-    printf("dbg->buf_ CURSIZE=%ld. dbg->file_advance=%ld, dbg->leftoverTail=%ld, dbg->buf_=0x%lx\n",
-        dbg->buf_->CurrentSize(), dbg->file_advance_, dbg->leftover_tail_, dbg->buf_);
-    Info(_logger, "dbg->buf_ CURSIZE=%ld. dbg->file_advance=%ld, dbg->leftoverTail=%ld, dbg->buf_=0x%lx", dbg->buf_->CurrentSize(), dbg->file_advance_, dbg->leftover_tail_, dbg->buf_);
-
-  }
-  dbg->buf_->RefitTail(dbg->file_advance_, dbg->leftover_tail_);
+ dbg->buf_->RefitTail(dbg->file_advance_, dbg->leftover_tail_);
   char* ptr = dbg->buf_->Release();
-  if(is_for_compaction){
-    printf("After RefitTail dbg->buf_ CURSIZE=%ld. dbg->file_advance=%ld, dbg->leftoverTail=%ld ptr=0x%lx, dbg->buf_=0x%lx\n",
-        dbg->buf_->CurrentSize(), dbg->file_advance_, dbg->leftover_tail_, ptr, dbg->buf_);
 
-    Info(_logger, "After RefitTail dbg->buf_ CURSIZE=%ld. dbg->file_advance=%ld, dbg->leftoverTail=%ld, dbg->buf_=0x%lx", dbg->buf_->CurrentSize(), dbg->file_advance_, dbg->leftover_tail_, dbg->buf_);
-  }
   assert(ptr != nullptr);
   delete ptr;
 }
@@ -681,6 +663,7 @@ IOStatus ZoneFile::Append(void* data, int data_size, int valid_size, IODebugCont
   setExtentKeyvalid();
   setExtentID();
 
+#if 0
   if (is_for_compaction) {
   printf("%s [WRITE] ZoneNr=%d, filesize=%ld  ", getFilename().c_str(), active_zone_->GetZoneNr(), fileSize);
     printf("Push EXTENT INFO###################\nSmallestKey=");
@@ -691,6 +674,7 @@ IOStatus ZoneFile::Append(void* data, int data_size, int valid_size, IODebugCont
   printf("extent_start = 0x%lx extent_id=%d wr_size(length)=%d offset=0x%x\n#########################\n", 
   active_zone_->wp_, extents_.back()->id_, wr_size, offset+wr_size);
 }
+#endif
  
     Info(zbd_->logger_, "add write thread filename = %s zone %d extent_id %d length %d", filename_.c_str(), active_zone_->GetZoneNr(), extents_.back()->id_, wr_size);
   
